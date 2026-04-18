@@ -7,13 +7,26 @@ echo.
 
 cd /d "%~dp0"
 
-REM 尝试激活 conda 环境（如果 conda 可用）
+REM 查找 conda 环境路径（自适应）
 where conda >nul 2>&1
 if %errorlevel%==0 (
-    call conda activate omnivoice
+    REM 获取当前 conda 环境的路径
+    for /f "delims=" %%i in ('conda env list --json 2^|findstr /r ".*omnivoice.*prefix.*"') do set "CONDA_PATH=%%i"
+    if defined CONDA_PATH (
+        echo 已激活 conda 环境
+    )
 ) else (
-    echo 警告: 未找到 conda，请确保已安装 omnivoice 依赖
-    echo.
+    REM 如果没有 conda，尝试常见路径
+    if exist "D:\SotfwareData\MyAnconda\envs\omnivoice\python.exe" (
+        set PATH=D:\SotfwareData\MyAnconda\envs\omnivoice;D:\SotfwareData\MyAnconda\envs\omnivoice\Scripts;D:\SotfwareData\MyAnconda\envs\omnivoice\Library\bin;D:\SotfwareData\MyAnconda\envs\omnivoice\DLLs;%PATH%
+    )
+)
+
+REM 检查并复制缺失的 DLL（如 liblzma.dll）
+if exist "D:\SotfwareData\MyAnconda\envs\omnivoice\Library\bin\liblzma.dll" (
+    if not exist "D:\SotfwareData\MyAnconda\envs\omnivoice\DLLs\liblzma.dll" (
+        copy /Y "D:\SotfwareData\MyAnconda\envs\omnivoice\Library\bin\liblzma.dll" "D:\SotfwareData\MyAnconda\envs\omnivoice\DLLs\liblzma.dll" >nul
+    )
 )
 
 REM 设置 HuggingFace Token（从环境变量读取，或直接填写）

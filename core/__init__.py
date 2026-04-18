@@ -131,10 +131,16 @@ def clone_voice(
             prompt = VoiceClonePrompt.load(pt_path)
         else:
             logging.info("Creating voice prompt from: %s", ref_audio)
-            prompt = model.create_voice_clone_prompt(
+            raw_prompt = model.create_voice_clone_prompt(
                 ref_audio=str(ref_audio),
                 ref_text=ref_text,
                 preprocess_prompt=True,
+            )
+            # 转换为本地 VoiceClonePrompt（支持 save 方法）
+            prompt = VoiceClonePrompt(
+                ref_audio_tokens=raw_prompt.ref_audio_tokens,
+                ref_text=raw_prompt.ref_text,
+                ref_rms=raw_prompt.ref_rms,
             )
             prompt.save(pt_path)
             logging.info("Voice prompt saved to: %s", pt_path)
