@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 语音克隆核心库
-依赖: pip install omnivoice
+依赖: pip install omnivoice (从 pip 安装即可，VoiceClonePrompt 使用本地兼容版本)
 """
 from __future__ import annotations
 
@@ -23,7 +23,10 @@ if HF_TOKEN:
 else:
     logging.warning("HF_TOKEN not set in config.py. Download may be slow or fail.")
 
-from omnivoice import OmniVoice, VoiceClonePrompt
+from omnivoice import OmniVoice
+
+# VoiceClonePrompt 使用本地兼容版本（pip 版本未导出）
+from core.voice_clone_prompt import VoiceClonePrompt
 
 from config import (
     MODEL_NAME,
