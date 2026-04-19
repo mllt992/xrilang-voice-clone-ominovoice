@@ -208,6 +208,33 @@ def _generate_audio_array(
     return np.asarray(audios[0], dtype=np.float32)
 
 
+def _light_trim_audio_edges(
+    audio: np.ndarray,
+    sample_rate: int,
+    *,
+    threshold_db: float = -48.0,
+    padding_ms: int = 20,
+) -> np.ndarray:
+    if audio.size <= 1:
+        return audio
+
+    amplitude = np.abs(audio)
+    smoothing_window = max(1, int(sample_rate * 0.01))
+    if smoothing_window > 1:
+        kernel = np.ones(smoothing_window, dtype=np.float32) / smoothing_window
+        amplitude = np.convolve(amplitude, kernel, mode="same")
+
+    threshold = float(10 ** (threshold_db / 20.0))
+    active = np.flatnonzero(amplitude >= threshold)
+    if active.size == 0:
+        return audio
+
+    padding = int(sample_rate * padding_ms / 1000.0)
+    start = max(0, int(active[0]) - padding)
+    end = min(audio.size, int(active[-1]) + padding + 1)
+    return np.asarray(audio[start:end], dtype=np.float32)
+
+
 def _append_silence(chunks: list[np.ndarray], sample_rate: int, pause_ms: int) -> None:
     if pause_ms <= 0:
         return
@@ -417,6 +444,7 @@ def synthesize(
             audio_chunk_duration=audio_chunk_duration,
             audio_chunk_threshold=audio_chunk_threshold,
         )
+        pause_safe_gen_config = None
 
         voice_prompt: Optional[VoiceClonePrompt] = None
         if normalized_voice_id:
@@ -439,11 +467,26 @@ def synthesize(
                     base_instruct=instruct,
                 )
                 segments = auto_prosody_plan.segments
+                if auto_prosody_plan.preserve_pauses and postprocess_output:
+                    pause_safe_gen_config = _build_generation_config(
+                        num_step=num_step,
+                        guidance_scale=guidance_scale,
+                        t_shift=t_shift,
+                        layer_penalty_factor=layer_penalty_factor,
+                        position_temperature=position_temperature,
+                        class_temperature=class_temperature,
+                        denoise=denoise,
+                        preprocess_prompt=preprocess_prompt,
+                        postprocess_output=False,
+                        audio_chunk_duration=audio_chunk_duration,
+                        audio_chunk_threshold=audio_chunk_threshold,
+                    )
                 needs_segment_render = (
                     len(segments) > 1
                     or any(segment.injected_tag for segment in segments)
                     or any(abs(segment.speed - speed) >= 0.02 for segment in segments)
                     or any((segment.instruct_hint or "") != (instruct or "") for segment in segments)
+                    or any(segment.preserve_silence for segment in segments)
                 )
 
                 if needs_segment_render:
@@ -457,25 +500,32 @@ def synthesize(
                             segment.speed,
                             segment.render_text[:60] + "..." if len(segment.render_text) > 60 else segment.render_text,
                         )
-                        audio_chunks.append(
-                            _generate_audio_array(
-                                model,
-                                text=segment.render_text,
-                                language=language,
-                                generation_config=gen_config,
-                                speed=segment.speed,
-                                duration=None,
-                                voice_prompt=voice_prompt,
-                                instruct=segment.instruct_hint,
-                            )
+                        segment_config = (
+                            pause_safe_gen_config
+                            if pause_safe_gen_config is not None and segment.preserve_silence
+                            else gen_config
                         )
+                        segment_audio = _generate_audio_array(
+                            model,
+                            text=segment.render_text,
+                            language=language,
+                            generation_config=segment_config,
+                            speed=segment.speed,
+                            duration=None,
+                            voice_prompt=voice_prompt,
+                            instruct=segment.instruct_hint,
+                        )
+                        if pause_safe_gen_config is not None and segment.preserve_silence:
+                            segment_audio = _light_trim_audio_edges(segment_audio, model.sampling_rate)
+
+                        audio_chunks.append(segment_audio)
                         if index < len(segments) - 1:
                             _append_silence(audio_chunks, model.sampling_rate, segment.pause_ms)
 
                     audio = np.concatenate(audio_chunks) if audio_chunks else np.zeros(1, dtype=np.float32)
                     auto_prosody_used = True
                 else:
-                    auto_prosody_reason = "文本不需要句级韵律调整。"
+                    auto_prosody_reason = "文本不需要短语级韵律调整。"
                     audio = _generate_audio_array(
                         model,
                         text=auto_prosody_plan.normalized_text,
@@ -507,7 +557,7 @@ def synthesize(
         )
         message = "语音合成成功"
         if auto_prosody_used and auto_prosody_plan is not None:
-            message += f"（已启用自动韵律，{len(auto_prosody_plan.segments)} 段）"
+            message += f"（已启用自动韵律，{len(auto_prosody_plan.segments)} 段短语规划）"
         elif auto_prosody_reason:
             message += f"（自动韵律未生效：{auto_prosody_reason}）"
 

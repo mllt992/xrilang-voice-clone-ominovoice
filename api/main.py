@@ -56,7 +56,7 @@ async def _save_upload_to_temp(upload: UploadFile) -> str:
         return tmp.name
 
 
-app = FastAPI(title="OmniVoice 语音克隆服务", version="1.1.0")
+app = FastAPI(title="OmniVoice 语音克隆服务", version="1.2.0")
 
 static_dir = PROJECT_ROOT / "static"
 static_dir.mkdir(exist_ok=True)
