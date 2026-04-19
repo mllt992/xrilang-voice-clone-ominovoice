@@ -35,6 +35,7 @@ else:
 
 from omnivoice import OmniVoice
 
+from core.audio_quality import analyze_reference_audio
 from core.expressive_text import build_auto_prosody_plan
 from core.service_utils import (
     build_output_filename,

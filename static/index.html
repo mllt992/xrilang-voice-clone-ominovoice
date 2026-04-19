@@ -708,6 +708,10 @@
             background: var(--color-error);
         }
 
+        .toast--warning {
+            background: var(--color-warning);
+        }
+
         .toast__icon {
             width: 20px;
             height: 20px;
@@ -767,6 +771,143 @@
             border-radius: var(--radius-sm);
             font-family: 'SF Mono', Monaco, monospace;
             font-size: var(--font-size-xs);
+        }
+
+        /* ========================================
+           Audio Quality
+           ======================================== */
+        .quality-card {
+            margin-top: var(--space-4);
+            padding: var(--space-4);
+            border: 1px solid var(--color-border);
+            border-radius: var(--radius-lg);
+            background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+        }
+
+        .quality-card[hidden] {
+            display: none;
+        }
+
+        .quality-card--loading {
+            color: var(--color-text-secondary);
+        }
+
+        .quality-card--error {
+            border-color: #fecaca;
+            background: #fef2f2;
+        }
+
+        .quality-card__header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: var(--space-4);
+            margin-bottom: var(--space-3);
+        }
+
+        .quality-card__title {
+            font-size: var(--font-size-sm);
+            font-weight: 600;
+        }
+
+        .quality-card__summary {
+            font-size: var(--font-size-sm);
+            color: var(--color-text-secondary);
+            margin-bottom: var(--space-3);
+        }
+
+        .quality-score {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 64px;
+            padding: var(--space-2) var(--space-3);
+            border-radius: 9999px;
+            font-size: var(--font-size-sm);
+            font-weight: 700;
+            color: white;
+        }
+
+        .quality-score--excellent { background: #059669; }
+        .quality-score--good { background: #2563eb; }
+        .quality-score--fair { background: #d97706; }
+        .quality-score--risky { background: #dc2626; }
+
+        .quality-metrics {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+            gap: var(--space-3);
+            margin-bottom: var(--space-3);
+        }
+
+        .quality-metric {
+            padding: var(--space-3);
+            border-radius: var(--radius-md);
+            background: rgba(255, 255, 255, 0.9);
+            border: 1px solid var(--color-border);
+        }
+
+        .quality-metric__label {
+            display: block;
+            font-size: var(--font-size-xs);
+            color: var(--color-text-muted);
+            margin-bottom: var(--space-1);
+        }
+
+        .quality-metric__value {
+            font-size: var(--font-size-sm);
+            font-weight: 600;
+            color: var(--color-text-primary);
+        }
+
+        .quality-alerts,
+        .quality-recommendations {
+            display: grid;
+            gap: var(--space-2);
+            margin-top: var(--space-3);
+        }
+
+        .quality-alert {
+            padding: var(--space-3);
+            border-radius: var(--radius-md);
+            border: 1px solid var(--color-border);
+            background: white;
+        }
+
+        .quality-alert--critical {
+            border-color: #fecaca;
+            background: #fff1f2;
+        }
+
+        .quality-alert--warning {
+            border-color: #fde68a;
+            background: #fffbeb;
+        }
+
+        .quality-alert--info {
+            border-color: #bfdbfe;
+            background: #eff6ff;
+        }
+
+        .quality-alert__title {
+            display: block;
+            font-size: var(--font-size-sm);
+            font-weight: 600;
+            margin-bottom: var(--space-1);
+        }
+
+        .quality-alert__detail,
+        .quality-recommendations__item {
+            font-size: var(--font-size-xs);
+            color: var(--color-text-secondary);
+        }
+
+        .quality-card__section-title {
+            font-size: var(--font-size-xs);
+            font-weight: 700;
+            color: var(--color-text-muted);
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
         }
 
         /* ========================================
@@ -872,6 +1013,7 @@
                             </label>
                         </div>
                         <p id="refAudioHint" class="form-hint">建议时长 3-10 秒，音质越清晰效果越好</p>
+                        <div id="refAudioQualityCard" class="quality-card" hidden aria-live="polite"></div>
                     </div>
 
                     <div class="form-group">
@@ -1228,6 +1370,10 @@
             </svg>
         `;
 
+        let refAudioQualityReport = null;
+        let refAudioAnalysisPending = false;
+        let refAudioAnalysisRequestId = 0;
+
         function showToast(message, type = 'success') {
             const toast = document.getElementById('toast');
             const toastText = document.getElementById('toastText');
@@ -1273,6 +1419,158 @@
             }
 
             return payload;
+        }
+
+        function createNode(tag, className, text) {
+            const node = document.createElement(tag);
+            if (className) {
+                node.className = className;
+            }
+            if (text !== undefined) {
+                node.textContent = text;
+            }
+            return node;
+        }
+
+        function clearRefAudioQualityCard() {
+            const card = document.getElementById('refAudioQualityCard');
+            if (!card) return;
+            refAudioAnalysisRequestId += 1;
+            card.hidden = true;
+            card.className = 'quality-card';
+            card.replaceChildren();
+            refAudioQualityReport = null;
+            refAudioAnalysisPending = false;
+        }
+
+        function renderRefAudioQualityLoading(fileName) {
+            const card = document.getElementById('refAudioQualityCard');
+            if (!card) return;
+
+            card.hidden = false;
+            card.className = 'quality-card quality-card--loading';
+            card.replaceChildren(
+                createNode('div', 'quality-card__title', '参考音频体检中'),
+                createNode('div', 'quality-card__summary', `正在分析 ${fileName} 的时长、响度、静音和失真风险...`),
+            );
+        }
+
+        function qualityScoreClass(report) {
+            return `quality-score quality-score--${report.grade || 'good'}`;
+        }
+
+        function formatPercent(value) {
+            return `${(Number(value || 0) * 100).toFixed(1)}%`;
+        }
+
+        function renderRefAudioQualityError(message) {
+            const card = document.getElementById('refAudioQualityCard');
+            if (!card) return;
+
+            card.hidden = false;
+            card.className = 'quality-card quality-card--error';
+            card.replaceChildren(
+                createNode('div', 'quality-card__title', '参考音频分析失败'),
+                createNode('div', 'quality-card__summary', message),
+            );
+        }
+
+        function renderRefAudioQualityReport(report) {
+            const card = document.getElementById('refAudioQualityCard');
+            if (!card) return;
+
+            const metrics = report.metrics || {};
+            card.hidden = false;
+            card.className = 'quality-card';
+            card.replaceChildren();
+
+            const header = createNode('div', 'quality-card__header');
+            const titleWrap = createNode('div');
+            titleWrap.appendChild(createNode('div', 'quality-card__title', `参考音频体检: ${report.grade_label || '可用'}`));
+            titleWrap.appendChild(createNode('div', 'quality-card__summary', report.summary || ''));
+            header.appendChild(titleWrap);
+            header.appendChild(createNode('div', qualityScoreClass(report), `${report.score ?? '-'} 分`));
+            card.appendChild(header);
+
+            const metricsGrid = createNode('div', 'quality-metrics');
+            [
+                ['时长', `${Number(metrics.duration_sec || 0).toFixed(1)} s`],
+                ['采样率', `${metrics.sample_rate || '-'} Hz`],
+                ['平均响度', `${metrics.rms_dbfs ?? '-'} dBFS`],
+                ['静音占比', formatPercent(metrics.silence_ratio)],
+                ['开头静音', `${metrics.leading_silence_ms || 0} ms`],
+                ['削波比例', formatPercent(metrics.clipping_ratio)],
+            ].forEach(([label, value]) => {
+                const item = createNode('div', 'quality-metric');
+                item.appendChild(createNode('span', 'quality-metric__label', label));
+                item.appendChild(createNode('span', 'quality-metric__value', value));
+                metricsGrid.appendChild(item);
+            });
+            card.appendChild(metricsGrid);
+
+            if (Array.isArray(report.alerts) && report.alerts.length) {
+                card.appendChild(createNode('div', 'quality-card__section-title', '风险提醒'));
+                const alertList = createNode('div', 'quality-alerts');
+                report.alerts.forEach((alert) => {
+                    const item = createNode('div', `quality-alert quality-alert--${alert.severity || 'info'}`);
+                    item.appendChild(createNode('span', 'quality-alert__title', alert.title || '提示'));
+                    item.appendChild(createNode('div', 'quality-alert__detail', alert.detail || ''));
+                    alertList.appendChild(item);
+                });
+                card.appendChild(alertList);
+            }
+
+            if (Array.isArray(report.recommendations) && report.recommendations.length) {
+                card.appendChild(createNode('div', 'quality-card__section-title', '优化建议'));
+                const recommendations = createNode('div', 'quality-recommendations');
+                report.recommendations.forEach((recommendation) => {
+                    recommendations.appendChild(createNode('div', 'quality-recommendations__item', recommendation));
+                });
+                card.appendChild(recommendations);
+            }
+        }
+
+        async function analyzeRefAudioFile(file) {
+            if (!file) {
+                clearRefAudioQualityCard();
+                return;
+            }
+
+            const requestId = ++refAudioAnalysisRequestId;
+            refAudioAnalysisPending = true;
+            renderRefAudioQualityLoading(file.name);
+
+            try {
+                const formData = new FormData();
+                formData.append('ref_audio', file);
+                const response = await fetch('/api/voice/analyze', {
+                    method: 'POST',
+                    body: formData,
+                });
+                const result = await parseApiResponse(response);
+                if (requestId !== refAudioAnalysisRequestId) {
+                    return;
+                }
+                refAudioQualityReport = result.quality_report || null;
+                refAudioAnalysisPending = false;
+
+                if (refAudioQualityReport) {
+                    renderRefAudioQualityReport(refAudioQualityReport);
+                    if (refAudioQualityReport.should_block) {
+                        showToast(`参考音频风险较高: ${refAudioQualityReport.summary}`, 'warning');
+                    }
+                } else {
+                    clearRefAudioQualityCard();
+                }
+            } catch (error) {
+                if (requestId !== refAudioAnalysisRequestId) {
+                    return;
+                }
+                refAudioAnalysisPending = false;
+                refAudioQualityReport = null;
+                renderRefAudioQualityError(error.message);
+                showToast(`参考音频分析失败: ${error.message}`, 'warning');
+            }
         }
 
         function renderRefAudioLabel(fileName = '') {
@@ -1468,8 +1766,10 @@
         const refAudioInput = document.getElementById('refAudio');
         if (refAudioInput) {
             refAudioInput.addEventListener('change', (event) => {
-                const fileName = event.target.files.length > 0 ? event.target.files[0].name : '';
+                const file = event.target.files.length > 0 ? event.target.files[0] : null;
+                const fileName = file ? file.name : '';
                 renderRefAudioLabel(fileName);
+                analyzeRefAudioFile(file);
             });
         }
 
@@ -1508,6 +1808,29 @@
                 return;
             }
 
+            if (refAudioAnalysisPending) {
+                showToast('参考音频仍在分析，请稍候再克隆', 'warning');
+                setLoading(btn, false);
+                return;
+            }
+
+            if (refAudioQualityReport?.should_warn) {
+                const risks = Array.isArray(refAudioQualityReport.alerts)
+                    ? refAudioQualityReport.alerts
+                        .filter((alert) => alert.severity !== 'info')
+                        .slice(0, 3)
+                        .map((alert) => `- ${alert.title}`)
+                        .join('\n')
+                    : '';
+                const confirmed = window.confirm(
+                    `参考音频得分 ${refAudioQualityReport.score} 分。\n${refAudioQualityReport.summary || ''}${risks ? `\n\n主要风险:\n${risks}` : ''}\n\n仍继续克隆吗？`
+                );
+                if (!confirmed) {
+                    setLoading(btn, false);
+                    return;
+                }
+            }
+
             try {
                 const formData = new FormData();
                 formData.append('voice_name', voiceName);
@@ -1523,9 +1846,14 @@
                 });
                 const result = await parseApiResponse(response);
 
+                if (result.quality_report) {
+                    refAudioQualityReport = result.quality_report;
+                    renderRefAudioQualityReport(result.quality_report);
+                }
                 showToast(result.message || '音色克隆成功');
                 event.target.reset();
                 renderRefAudioLabel();
+                clearRefAudioQualityCard();
                 await loadVoices(result.voice_id || '');
             } catch (error) {
                 showToast(`克隆失败: ${error.message}`, 'error');
@@ -1603,6 +1931,7 @@
         });
 
         renderRefAudioLabel();
+        clearRefAudioQualityCard();
         loadVoices();
         loadOutputs();
 
