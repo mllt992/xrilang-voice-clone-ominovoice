@@ -89,9 +89,23 @@ async def api_synthesize(
     text: str = Form(...),
     voice_id: str = Form(...),
     language: str = Form("Chinese"),
+    # Speed & Duration
     speed: float = Form(1.0),
+    duration: Optional[float] = Form(None),
+    # Quality
     num_step: int = Form(32),
     guidance_scale: float = Form(2.0),
+    # Advanced
+    t_shift: float = Form(0.1),
+    layer_penalty_factor: float = Form(5.0),
+    position_temperature: float = Form(5.0),
+    class_temperature: float = Form(0.0),
+    # Options
+    denoise: bool = Form(True),
+    preprocess_prompt: bool = Form(True),
+    postprocess_output: bool = Form(True),
+    # Voice Design
+    instruct: Optional[str] = Form(None),
 ):
     """
     语音合成接口
@@ -99,17 +113,35 @@ async def api_synthesize(
     - text: 要合成的文本
     - voice_id: 音色 ID
     - language: 语言
-    - speed: 语速
-    - num_step: 扩散步数
-    - guidance_scale: 引导 scale
+    - speed: 语速 (0.5-2.0)
+    - duration: 固定时长（秒）
+    - num_step: 扩散步数 (4-64)
+    - guidance_scale: 引导强度 (0.0-5.0)
+    - t_shift: 时间偏移 (0.0-1.0)
+    - layer_penalty_factor: 层惩罚 (0.0-10.0)
+    - position_temperature: 位置温度 (0.0-10.0)
+    - class_temperature: 类别温度 (0.0-5.0)
+    - denoise: 是否去噪
+    - preprocess_prompt: 是否预处理
+    - postprocess_output: 是否后处理
+    - instruct: Voice Design 指令
     """
     result = synthesize(
         text=text,
         voice_id=voice_id,
         language=language,
         speed=speed,
+        duration=duration,
         num_step=num_step,
         guidance_scale=guidance_scale,
+        t_shift=t_shift,
+        layer_penalty_factor=layer_penalty_factor,
+        position_temperature=position_temperature,
+        class_temperature=class_temperature,
+        denoise=denoise,
+        preprocess_prompt=preprocess_prompt,
+        postprocess_output=postprocess_output,
+        instruct=instruct,
     )
     return result
 

@@ -168,9 +168,23 @@ def synthesize(
     voice_id: str,
     language: str = "Chinese",
     output_filename: Optional[str] = None,
+    # Speed & Duration
     speed: float = 1.0,
+    duration: Optional[float] = None,
+    # Quality
     num_step: int = 32,
     guidance_scale: float = 2.0,
+    # Advanced
+    t_shift: float = 0.1,
+    layer_penalty_factor: float = 5.0,
+    position_temperature: float = 5.0,
+    class_temperature: float = 0.0,
+    # Options
+    denoise: bool = True,
+    preprocess_prompt: bool = True,
+    postprocess_output: bool = True,
+    # Voice Design (override voice_clone_prompt)
+    instruct: Optional[str] = None,
 ) -> dict:
     """
     使用指定音色合成语音
@@ -180,9 +194,18 @@ def synthesize(
         voice_id: 音色 ID（对应 voices/ 目录下的 .pt 文件）
         language: 语言
         output_filename: 输出文件名（None = 自动生成带时间戳的文件名）
-        speed: 语速
-        num_step: 扩散步数
-        guidance_scale: 引导 scale
+        speed: 语速 (0.5-2.0, 1.0=正常, >1加速, <1减速)
+        duration: 固定时长（秒），优先级高于 speed
+        num_step: 扩散步数 (4-64, 越大质量越好越慢)
+        guidance_scale: 引导强度 (0.0-5.0, 越高越符合描述)
+        t_shift: 时间偏移 (0.0-1.0, 影响语速变化感)
+        layer_penalty_factor: 层惩罚 (0.0-10.0, 影响声音层次感)
+        position_temperature: 位置温度 (0.0-10.0, 越高越随机)
+        class_temperature: 类别温度 (0.0-5.0, 越高越随机)
+        denoise: 是否去噪
+        preprocess_prompt: 是否预处理参考音频
+        postprocess_output: 是否后处理输出
+        instruct: Voice Design 指令（会覆盖 voice_clone_prompt）
 
     Returns:
         {
@@ -194,9 +217,12 @@ def synthesize(
             "message": str
         }
     """
+    from omnivoice import OmniVoiceGenerationConfig
+
     pt_path = VOICES_DIR / f"{voice_id}.pt"
 
-    if not pt_path.exists():
+    # 如果使用 instruct，不需要检查 pt_path
+    if not instruct and not pt_path.exists():
         return {
             "success": False,
             "text": text,
@@ -207,18 +233,41 @@ def synthesize(
         }
 
     try:
-        voice_prompt = VoiceClonePrompt.load(pt_path)
         model = get_model()
 
-        logging.info("Generating audio: %s", text[:50] + "..." if len(text) > 50 else text)
-        audios = model.generate(
-            text=text,
-            language=language,
-            voice_clone_prompt=voice_prompt,
-            speed=speed,
+        # 构建生成配置
+        gen_config = OmniVoiceGenerationConfig(
             num_step=num_step,
             guidance_scale=guidance_scale,
+            t_shift=t_shift,
+            layer_penalty_factor=layer_penalty_factor,
+            position_temperature=position_temperature,
+            class_temperature=class_temperature,
+            denoise=denoise,
+            preprocess_prompt=preprocess_prompt,
+            postprocess_output=postprocess_output,
         )
+
+        kw = dict(
+            text=text,
+            language=language,
+            generation_config=gen_config,
+        )
+
+        if speed != 1.0:
+            kw["speed"] = speed
+        if duration is not None:
+            kw["duration"] = duration
+
+        # Voice Design 或 Voice Clone
+        if instruct:
+            kw["instruct"] = instruct
+        else:
+            voice_prompt = VoiceClonePrompt.load(pt_path)
+            kw["voice_clone_prompt"] = voice_prompt
+
+        logging.info("Generating audio: %s", text[:50] + "..." if len(text) > 50 else text)
+        audios = model.generate(**kw)
 
         # 生成输出文件名
         if output_filename is None:
