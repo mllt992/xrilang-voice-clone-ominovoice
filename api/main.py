@@ -14,8 +14,8 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from config import OUTPUT_DIR, PROJECT_ROOT
-from core import analyze_reference_audio, clone_voice, list_outputs, list_voices, synthesize
+from config import OUTPUT_DIR, PROJECT_ROOT, SUPPORTED_MODELS
+from core import analyze_reference_audio, clone_voice, get_model_info, list_outputs, list_voices, synthesize
 from core.service_utils import clean_optional_text, resolve_file_in_dir
 
 
@@ -77,6 +77,23 @@ async def api_health():
     }
 
 
+@app.get("/api/models")
+async def api_list_models():
+    """获取支持的模型列表"""
+    models = []
+    for model_id, model_config in SUPPORTED_MODELS.items():
+        models.append({
+            "model_id": model_id,
+            "name": model_config.get("name", model_id),
+            "description": model_config.get("description", ""),
+        })
+    return {
+        "success": True,
+        "models": models,
+        "total": len(models),
+    }
+
+
 @app.post("/api/voice/analyze")
 async def api_analyze_reference_audio(ref_audio: UploadFile = File(...)):
     tmp_path = await _save_upload_to_temp(ref_audio)
@@ -102,6 +119,7 @@ async def api_clone_voice(
     ref_audio: UploadFile = File(...),
     ref_text: Optional[str] = Form(None),
     rebuild: bool = Form(False),
+    model_name: Optional[str] = Form(None),
 ):
     tmp_path = await _save_upload_to_temp(ref_audio)
 
@@ -118,6 +136,7 @@ async def api_clone_voice(
             voice_name=voice_name,
             ref_text=ref_text,
             rebuild=rebuild,
+            model_name=model_name,
         )
         if quality_report is not None:
             result["quality_report"] = quality_report
@@ -159,30 +178,43 @@ async def api_synthesize(
     auto_prosody: bool = Form(True),
     auto_prosody_debug: bool = Form(False),
     instruct: Optional[str] = Form(None),
+    model_name: Optional[str] = Form(None),
+    reference_wav: Optional[UploadFile] = File(None),
 ):
-    result = await run_in_threadpool(
-        synthesize,
-        text=text,
-        voice_id=voice_id,
-        language=language,
-        speed=speed,
-        duration=duration,
-        num_step=num_step,
-        guidance_scale=guidance_scale,
-        t_shift=t_shift,
-        layer_penalty_factor=layer_penalty_factor,
-        position_temperature=position_temperature,
-        class_temperature=class_temperature,
-        denoise=denoise,
-        preprocess_prompt=preprocess_prompt,
-        postprocess_output=postprocess_output,
-        audio_chunk_duration=audio_chunk_duration,
-        audio_chunk_threshold=audio_chunk_threshold,
-        auto_prosody=auto_prosody,
-        auto_prosody_debug=auto_prosody_debug,
-        instruct=instruct,
-    )
-    return _result_response(result)
+    # 处理参考音频上传
+    ref_wav_path = None
+    if reference_wav is not None:
+        ref_wav_path = await _save_upload_to_temp(reference_wav)
+
+    try:
+        result = await run_in_threadpool(
+            synthesize,
+            text=text,
+            voice_id=voice_id,
+            language=language,
+            speed=speed,
+            duration=duration,
+            num_step=num_step,
+            guidance_scale=guidance_scale,
+            t_shift=t_shift,
+            layer_penalty_factor=layer_penalty_factor,
+            position_temperature=position_temperature,
+            class_temperature=class_temperature,
+            denoise=denoise,
+            preprocess_prompt=preprocess_prompt,
+            postprocess_output=postprocess_output,
+            audio_chunk_duration=audio_chunk_duration,
+            audio_chunk_threshold=audio_chunk_threshold,
+            auto_prosody=auto_prosody,
+            auto_prosody_debug=auto_prosody_debug,
+            instruct=instruct,
+            model_name=model_name,
+            reference_wav_path=ref_wav_path,
+        )
+        return _result_response(result)
+    finally:
+        if ref_wav_path and os.path.exists(ref_wav_path):
+            os.remove(ref_wav_path)
 
 
 @app.get("/api/output/list")

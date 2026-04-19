@@ -1051,6 +1051,20 @@
 
                 <form id="synthForm" aria-label="语音合成表单">
                     <div class="form-group">
+                        <label for="synthModel" class="form-label">选择模型</label>
+                        <select id="synthModel" class="form-select">
+                            <option value="">加载中...</option>
+                        </select>
+                        <p class="form-hint" id="synthModelHint">选择要使用的语音合成模型</p>
+                    </div>
+
+                    <div class="form-group" id="refAudioGroup" style="display: none;">
+                        <label for="synthRefAudio" class="form-label">参考音频（VoxCPM2 音色克隆）</label>
+                        <input type="file" id="synthRefAudio" class="form-input" accept="audio/*">
+                        <p class="form-hint">VoxCPM2 专用：上传参考音频进行音色克隆（OmniVoice 音色文件不适用）</p>
+                    </div>
+
+                    <div class="form-group">
                         <label for="synthVoiceId" class="form-label">选择音色</label>
                         <select id="synthVoiceId" class="form-select">
                             <option value="">-- 自动选择音色（Auto Voice） --</option>
@@ -1573,6 +1587,71 @@
             }
         }
 
+        async function loadModels() {
+            try {
+                const response = await fetch('/api/models');
+                const result = await parseApiResponse(response);
+                const models = Array.isArray(result.models) ? result.models : [];
+                const synthModel = document.getElementById('synthModel');
+                const synthModelHint = document.getElementById('synthModelHint');
+
+                synthModel.replaceChildren();
+
+                if (models.length === 0) {
+                    const option = document.createElement('option');
+                    option.value = '';
+                    option.textContent = '-- 无可用模型 --';
+                    synthModel.appendChild(option);
+                    return;
+                }
+
+                models.forEach((model) => {
+                    const option = document.createElement('option');
+                    option.value = model.model_id;
+                    option.textContent = `${model.name} - ${model.description}`;
+                    synthModel.appendChild(option);
+                });
+
+                if (synthModelHint && models.length > 0) {
+                    synthModelHint.textContent = `当前选择: ${models.length} 个可用模型`;
+                }
+            } catch (error) {
+                console.error('加载模型列表失败:', error);
+                const synthModel = document.getElementById('synthModel');
+                if (synthModel) {
+                    synthModel.replaceChildren();
+                    const option = document.createElement('option');
+                    option.value = '';
+                    option.textContent = '-- 加载失败 --';
+                    synthModel.appendChild(option);
+                }
+            }
+        }
+
+        function handleModelChange() {
+            const synthModel = document.getElementById('synthModel');
+            const refAudioGroup = document.getElementById('refAudioGroup');
+            const synthVoiceId = document.getElementById('synthVoiceId');
+            const voiceHint = synthVoiceId?.parentElement?.querySelector('.form-hint');
+
+            if (!synthModel) return;
+
+            const selectedModel = synthModel.value;
+
+            // VoxCPM2 不支持 OmniVoice 音色文件
+            if (selectedModel === 'openbmb/VoxCPM2') {
+                if (refAudioGroup) refAudioGroup.style.display = 'block';
+                if (voiceHint) {
+                    voiceHint.textContent = 'VoxCPM2 不支持 OmniVoice 音色文件，请使用上方参考音频上传';
+                }
+            } else {
+                if (refAudioGroup) refAudioGroup.style.display = 'none';
+                if (voiceHint) {
+                    voiceHint.textContent = '可留空使用 Auto Voice；也可以选择已克隆音色后再搭配 instruct，用来增强口音、方言或风格控制';
+                }
+            }
+        }
+
         function renderRefAudioLabel(fileName = '') {
             const refAudioLabel = document.getElementById('refAudioLabel');
             if (!refAudioLabel) return;
@@ -1867,6 +1946,7 @@
             const btn = document.getElementById('synthBtn');
             setLoading(btn, true);
 
+            const modelName = document.getElementById('synthModel').value;
             const voiceId = document.getElementById('synthVoiceId').value.trim();
             const text = document.getElementById('synthText').value.trim();
             const language = document.getElementById('synthLanguage').value;
@@ -1911,6 +1991,15 @@
                 if (instruct) {
                     formData.append('instruct', instruct);
                 }
+                if (modelName) {
+                    formData.append('model_name', modelName);
+                }
+
+                // VoxCPM2 参考音频上传
+                const synthRefAudio = document.getElementById('synthRefAudio');
+                if (synthRefAudio && synthRefAudio.files && synthRefAudio.files.length > 0) {
+                    formData.append('reference_wav', synthRefAudio.files[0]);
+                }
 
                 const response = await fetch('/api/synthesize', {
                     method: 'POST',
@@ -1932,8 +2021,15 @@
 
         renderRefAudioLabel();
         clearRefAudioQualityCard();
+        loadModels();
         loadVoices();
         loadOutputs();
+
+        // 模型选择事件监听
+        const synthModel = document.getElementById('synthModel');
+        if (synthModel) {
+            synthModel.addEventListener('change', handleModelChange);
+        }
 
         setInterval(() => {
             loadVoices();

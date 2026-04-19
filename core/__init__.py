@@ -44,10 +44,11 @@ from core.service_utils import (
     validate_voice_name,
 )
 from core.voice_clone_prompt import VoiceClonePrompt
-from config import FFMPEG_CANDIDATES, MODEL_NAME, OUTPUT_DIR, VOICES_DIR
+from config import FFMPEG_CANDIDATES, MODEL_NAME, OUTPUT_DIR, SUPPORTED_MODELS, VOICES_DIR
 
 
-_model_instance: Optional[OmniVoice] = None
+# 模型实例缓存
+_model_instances: dict[str, object] = {}
 _model_lock = threading.RLock()
 
 MAX_TEXT_LENGTH = int(getattr(app_config, "MAX_TEXT_LENGTH", 3000))
@@ -84,38 +85,78 @@ def _get_model_dtype(device: str) -> torch.dtype:
     return torch.float16 if device != "cpu" else torch.float32
 
 
-def get_model() -> OmniVoice:
-    global _model_instance
+def get_model(model_name: Optional[str] = None) -> object:
+    """获取指定名称的模型实例"""
+    if model_name is None:
+        model_name = MODEL_NAME
 
-    if _model_instance is not None:
-        return _model_instance
+    if model_name in _model_instances:
+        return _model_instances[model_name]
 
     with _model_lock:
-        if _model_instance is not None:
-            return _model_instance
+        if model_name in _model_instances:
+            return _model_instances[model_name]
 
         _ensure_tf32()
         _ensure_ffmpeg()
+
+        model_config = SUPPORTED_MODELS.get(model_name)
+        if model_config is None:
+            raise ValueError(f"Unsupported model: {model_name}")
 
         device = _get_best_device()
         dtype = _get_model_dtype(device)
         device_map_strategy = "auto" if device == "cuda" else device
 
-        logging.info(
-            "Loading OmniVoice on %s with dtype=%s, device_map=%s",
-            device,
-            dtype,
-            device_map_strategy,
-        )
-        _model_instance = OmniVoice.from_pretrained(
-            MODEL_NAME,
-            device_map=device_map_strategy,
-            dtype=dtype,
-            load_asr=True,
-            low_cpu_mem_usage=True,
-        )
-        logging.info("Model loaded successfully")
-        return _model_instance
+        model_class = model_config["class"]
+        model_module = model_config["module"]
+        local_path = model_config.get("local_path")
+
+        if model_module == "omnivoice":
+            logging.info(
+                "Loading OmniVoice on %s with dtype=%s, device_map=%s",
+                device,
+                dtype,
+                device_map_strategy,
+            )
+            model = OmniVoice.from_pretrained(
+                local_path or model_name,
+                device_map=device_map_strategy,
+                dtype=dtype,
+                load_asr=True,
+                low_cpu_mem_usage=True,
+            )
+        elif model_module == "voxcpm":
+            logging.info(
+                "Loading VoxCPM2 on %s with dtype=%s",
+                device,
+                dtype,
+            )
+            import voxcpm
+            VoxCPM = getattr(voxcpm, model_class)
+            model = VoxCPM.from_pretrained(
+                local_path or model_name,
+                load_denoiser=False,
+            )
+        else:
+            raise ValueError(f"Unknown model module: {model_module}")
+
+        _model_instances[model_name] = model
+        logging.info("Model %s loaded successfully", model_name)
+        return model
+
+
+def get_model_info(model_name: Optional[str] = None) -> dict:
+    """获取模型信息"""
+    if model_name is None:
+        model_name = MODEL_NAME
+    config = SUPPORTED_MODELS.get(model_name, {})
+    return {
+        "model_name": model_name,
+        "name": config.get("name", model_name),
+        "description": config.get("description", ""),
+        "is_loaded": model_name in _model_instances,
+    }
 
 
 def _build_generation_config(
@@ -208,6 +249,36 @@ def _generate_audio_array(
     return np.asarray(audios[0], dtype=np.float32)
 
 
+def _generate_audio_array_voxcpm(
+    model,
+    *,
+    text: str,
+    reference_wav_path: Optional[str],
+    instruct: Optional[str],
+    cfg_value: float,
+    inference_timesteps: int,
+) -> np.ndarray:
+    """VoxCPM2 的音频生成函数"""
+    # 构建文本（包含 instruct 指令）
+    if instruct:
+        full_text = f"({instruct}){text}"
+    else:
+        full_text = text
+
+    gen_kwargs = {
+        "text": full_text,
+        "cfg_value": cfg_value,
+        "inference_timesteps": inference_timesteps,
+    }
+
+    if reference_wav_path:
+        gen_kwargs["reference_wav_path"] = reference_wav_path
+
+    audio = model.generate(**gen_kwargs)
+    # VoxCPM2 generate() 直接返回音频数组
+    return np.asarray(audio, dtype=np.float32)
+
+
 def _light_trim_audio_edges(
     audio: np.ndarray,
     sample_rate: int,
@@ -259,7 +330,25 @@ def clone_voice(
     voice_name: str,
     ref_text: Optional[str] = None,
     rebuild: bool = False,
+    model_name: Optional[str] = None,
 ) -> dict:
+    if model_name is None:
+        model_name = MODEL_NAME
+
+    model_config = SUPPORTED_MODELS.get(model_name, {})
+    model_module = model_config.get("module")
+
+    # VoxCPM2 不需要单独的音色克隆步骤，直接在 generate 中使用参考音频
+    if model_module == "voxcpm":
+        return {
+            "success": False,
+            "status_code": 400,
+            "voice_id": clean_optional_text(voice_name) or "",
+            "voice_name": clean_optional_text(voice_name) or "",
+            "pt_path": "",
+            "message": "VoxCPM2 不需要预先克隆音色，请直接在合成时选择参考音频。",
+        }
+
     try:
         voice_name = validate_voice_name(voice_name)
     except ValueError as exc:
@@ -302,7 +391,7 @@ def clone_voice(
             }
 
         with _model_lock:
-            model = get_model()
+            model = get_model(model_name)
             logging.info("Creating voice prompt from: %s", ref_audio)
             raw_prompt = model.create_voice_clone_prompt(
                 ref_audio=str(ref_audio),
@@ -359,7 +448,15 @@ def synthesize(
     auto_prosody: bool = DEFAULT_AUTO_PROSODY,
     auto_prosody_debug: bool = False,
     instruct: Optional[str] = None,
+    model_name: Optional[str] = None,
+    reference_wav_path: Optional[str] = None,
 ) -> dict:
+    if model_name is None:
+        model_name = MODEL_NAME
+
+    model_config = SUPPORTED_MODELS.get(model_name, {})
+    model_module = model_config.get("module")
+
     text = clean_optional_text(text)
     instruct = clean_optional_text(instruct)
     language = clean_optional_text(language) or "Chinese"
@@ -457,7 +554,53 @@ def synthesize(
         auto_prosody_plan = None
 
         with _model_lock:
-            model = get_model()
+            model = get_model(model_name)
+
+            # VoxCPM2 使用不同的生成逻辑
+            if model_module == "voxcpm":
+                # VoxCPM2 简化处理：不支持 auto_prosody 和 voice_prompt
+                if auto_prosody:
+                    auto_prosody_reason = "VoxCPM2 不支持自动韵律功能"
+                    auto_prosody_used = False
+
+                # 获取参考音频路径（优先使用 reference_wav_path，否则从 voice_id 获取）
+                ref_wav = reference_wav_path
+                if not ref_wav and normalized_voice_id:
+                    # OmniVoice 音色文件不适用于 VoxCPM2
+                    auto_prosody_reason = "VoxCPM2 不支持 OmniVoice 音色文件，请使用参考音频"
+                    ref_wav = None
+
+                audio = _generate_audio_array_voxcpm(
+                    model,
+                    text=text,
+                    reference_wav_path=ref_wav,
+                    instruct=instruct,
+                    cfg_value=guidance_scale,
+                    inference_timesteps=num_step,
+                )
+                sample_rate = model.tts_model.sample_rate
+                voice_mode = "voice_clone" if ref_wav else "voice_design"
+
+                audio_path.parent.mkdir(parents=True, exist_ok=True)
+                sf.write(audio_path, audio, sample_rate)
+
+                message = "语音合成成功"
+                if auto_prosody_reason:
+                    message += f"（自动韵律未生效：{auto_prosody_reason}）"
+
+                return {
+                    "success": True,
+                    "status_code": 200,
+                    "mode": voice_mode,
+                    "text": text,
+                    "voice_id": normalized_voice_id or "",
+                    "audio_path": str(audio_path),
+                    "sample_rate": sample_rate,
+                    "message": message,
+                    "auto_prosody": auto_prosody,
+                    "auto_prosody_used": False,
+                    "auto_prosody_reason": auto_prosody_reason,
+                }
 
             if auto_prosody and duration is None:
                 auto_prosody_plan = build_auto_prosody_plan(
