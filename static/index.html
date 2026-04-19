@@ -888,8 +888,8 @@
                         <p class="form-hint">不勾选时会直接复用已有同名音色缓存，适合重复调用；勾选后会重新编码当前参考音频</p>
                     </div>
 
-                    <button type="submit" class="btn btn--primary btn--lg btn--block" id="cloneBtn">
-                        <span id="cloneBtnText">开始克隆</span>
+                    <button type="submit" class="btn btn--primary btn--lg btn--block" id="cloneBtn" data-label="开始克隆">
+                        <span class="btn__label">开始克隆</span>
                     </button>
                 </form>
             </section>
@@ -1082,8 +1082,8 @@
                         </div>
                     </div>
 
-                    <button type="submit" class="btn btn--primary btn--lg btn--block" id="synthBtn">
-                        <span id="synthBtnText">开始合成</span>
+                    <button type="submit" class="btn btn--primary btn--lg btn--block" id="synthBtn" data-label="开始合成">
+                        <span class="btn__label">开始合成</span>
                     </button>
                 </form>
             </section>
@@ -1230,13 +1230,18 @@
             }, 4000);
         }
 
-        function setLoading(btn, loading, originalText) {
+        function setLoading(btn, loading) {
+            const originalText = btn.dataset.label || btn.textContent.trim();
+            btn.dataset.label = originalText;
+
             if (loading) {
                 btn.disabled = true;
-                btn.innerHTML = `<span class="btn__spinner"></span>处理中...`;
+                btn.setAttribute('aria-busy', 'true');
+                btn.innerHTML = `<span class="btn__spinner"></span><span class="btn__label">处理中...</span>`;
             } else {
                 btn.disabled = false;
-                btn.innerHTML = originalText;
+                btn.removeAttribute('aria-busy');
+                btn.innerHTML = `<span class="btn__label">${originalText}</span>`;
             }
         }
 
@@ -1479,9 +1484,7 @@
         document.getElementById('cloneForm').addEventListener('submit', async (event) => {
             event.preventDefault();
             const btn = document.getElementById('cloneBtn');
-            const btnText = document.getElementById('cloneBtnText');
-            const originalText = btnText.textContent;
-            setLoading(btn, true, originalText);
+            setLoading(btn, true);
 
             const voiceName = document.getElementById('voiceName').value.trim();
             const refAudio = document.getElementById('refAudio').files[0];
@@ -1490,7 +1493,7 @@
 
             if (!refAudio) {
                 showToast('请选择参考音频', 'error');
-                setLoading(btn, false, originalText);
+                setLoading(btn, false);
                 return;
             }
 
@@ -1515,17 +1518,15 @@
                 await loadVoices(result.voice_id || '');
             } catch (error) {
                 showToast(`克隆失败: ${error.message}`, 'error');
+            } finally {
+                setLoading(btn, false);
             }
-
-            setLoading(btn, false, originalText);
         });
 
         document.getElementById('synthForm').addEventListener('submit', async (event) => {
             event.preventDefault();
             const btn = document.getElementById('synthBtn');
-            const btnText = document.getElementById('synthBtnText');
-            const originalText = btnText.textContent;
-            setLoading(btn, true, originalText);
+            setLoading(btn, true);
 
             const voiceId = document.getElementById('synthVoiceId').value.trim();
             const text = document.getElementById('synthText').value.trim();
@@ -1578,9 +1579,9 @@
                 await loadOutputs();
             } catch (error) {
                 showToast(`合成失败: ${error.message}`, 'error');
+            } finally {
+                setLoading(btn, false);
             }
-
-            setLoading(btn, false, originalText);
         });
 
         renderRefAudioLabel();
