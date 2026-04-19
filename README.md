@@ -4,6 +4,10 @@
 
 ![项目界面截图](img.png)
 
+
+
+了解情况：[OmniVoice本地部署实现音色克隆和语音合成 | 小黄花](https://www.xrilang.top/archives/wei-ming-ming-wen-zhang-m3HmanpK)
+
 ## 当前能力
 
 - 支持 `音色克隆`、`Voice Design`、`Auto Voice`
@@ -291,3 +295,4 @@ GET /api/output/{filename}
 
 - [k2-fsa/OmniVoice](https://github.com/k2-fsa/OmniVoice)
 - [Hugging Face OmniVoice Model Card](https://huggingface.co/k2-fsa/OmniVoice)
+- [linux.do](https://linux.do/)
