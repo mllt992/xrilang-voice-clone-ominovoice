@@ -7,18 +7,11 @@ echo.
 
 cd /d "%~dp0"
 
-REM 查找 conda 环境路径（自适应）
-where conda >nul 2>&1
-if %errorlevel%==0 (
-    REM 获取当前 conda 环境的路径
-    for /f "delims=" %%i in ('conda env list --json 2^>nul ^| findstr /i "omnivoice"') do (
-        echo 已激活 conda 环境
-    )
-) else (
-    REM 如果没有 conda，尝试常见路径
-    if exist "D:\SotfwareData\MyAnconda\envs\omnivoice\python.exe" (
-        set PATH=D:\SotfwareData\MyAnconda\envs\omnivoice;D:\SotfwareData\MyAnconda\envs\omnivoice\Scripts;D:\SotfwareData\MyAnconda\envs\omnivoice\Library\bin;D:\SotfwareData\MyAnconda\envs\omnivoice\DLLs;%PATH%
-    )
+REM 设置 conda 环境路径（如果需要）
+if exist "D:\SotfwareData\MyAnconda\envs\omnivoice\python.exe" (
+    set PATH=D:\SotfwareData\MyAnconda\envs\omnivoice;D:\SotfwareData\MyAnconda\envs\omnivoice\Scripts;D:\SotfwareData\MyAnconda\envs\omnivoice\Library\bin;D:\SotfwareData\MyAnconda\envs\omnivoice\DLLs;%PATH%
+    echo 已配置 conda 环境路径
+    echo.
 )
 
 REM 检查并复制缺失的 DLL（如 liblzma.dll）
