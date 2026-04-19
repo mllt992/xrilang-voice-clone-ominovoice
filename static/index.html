@@ -853,7 +853,8 @@
                 <form id="cloneForm" aria-label="音色克隆表单">
                     <div class="form-group">
                         <label for="voiceName" class="form-label form-label--required">音色名称</label>
-                        <input type="text" id="voiceName" class="form-input" placeholder="例如：yundi" required autocomplete="off">
+                        <input type="text" id="voiceName" class="form-input" placeholder="例如：yundi" required autocomplete="off" pattern="[A-Za-z0-9_-]{1,64}" maxlength="64">
+                        <p class="form-hint">仅支持字母、数字、下划线和短横线，便于后续安全管理与复用</p>
                     </div>
 
                     <div class="form-group">
@@ -879,6 +880,14 @@
                         <p class="form-hint">如果知道参考音频的内容，建议填写以提高准确度</p>
                     </div>
 
+                    <div class="form-group">
+                        <label class="checkbox">
+                            <input type="checkbox" id="cloneRebuild" class="checkbox__input">
+                            <span class="checkbox__label">强制重建同名音色</span>
+                        </label>
+                        <p class="form-hint">不勾选时会直接复用已有同名音色缓存，适合重复调用；勾选后会重新编码当前参考音频</p>
+                    </div>
+
                     <button type="submit" class="btn btn--primary btn--lg btn--block" id="cloneBtn">
                         <span id="cloneBtnText">开始克隆</span>
                     </button>
@@ -900,10 +909,11 @@
 
                 <form id="synthForm" aria-label="语音合成表单">
                     <div class="form-group">
-                        <label for="synthVoiceId" class="form-label form-label--required">选择音色</label>
-                        <select id="synthVoiceId" class="form-select" required>
-                            <option value="">-- 请先克隆音色 --</option>
+                        <label for="synthVoiceId" class="form-label">选择音色</label>
+                        <select id="synthVoiceId" class="form-select">
+                            <option value="">-- 自动选择音色（Auto Voice） --</option>
                         </select>
+                        <p class="form-hint">可留空使用 Auto Voice；也可以选择已克隆音色后再搭配 instruct，用来增强口音、方言或风格控制</p>
                     </div>
 
                     <div class="form-group">
@@ -969,9 +979,9 @@
                             <div class="range" style="margin-bottom: var(--space-4);">
                                 <div class="range__header">
                                     <label for="synthNumStep" class="range__label">推理步数</label>
-                                    <span class="range__value" id="synthNumStepValue">32</span>
+                                    <span class="range__value" id="synthNumStepValue">16</span>
                                 </div>
-                                <input type="range" id="synthNumStep" class="range__input" min="4" max="64" step="1" value="32">
+                                <input type="range" id="synthNumStep" class="range__input" min="4" max="64" step="1" value="16">
                                 <p class="range__hint">越大质量越好，越慢</p>
                             </div>
 
@@ -1061,13 +1071,13 @@
                             <div class="form-group">
                                 <label for="synthInstruct" class="form-label">Instruct 指令</label>
                                 <input type="text" id="synthInstruct" class="form-input" placeholder="如：female, young adult, high pitch">
-                                <p class="form-hint">Voice Design 模式会覆盖选中的音色</p>
+                                <p class="form-hint">可单独用作 Voice Design，也可与已选择音色组合，官方建议在中文方言场景一起使用</p>
                             </div>
                             <div class="tag-group" role="group" aria-label="Voice Design 预设">
-                                <button type="button" class="tag" onclick="setInstruct('female, young adult, high pitch')">女声/青年/高音</button>
-                                <button type="button" class="tag" onclick="setInstruct('male, middle-aged, low pitch')">男声/中年/低音</button>
-                                <button type="button" class="tag" onclick="setInstruct('female, whisper')">女声/耳语</button>
-                                <button type="button" class="tag" onclick="setInstruct('child')">童声</button>
+                                <button type="button" class="tag voice-preset" data-instruct="female, young adult, high pitch">女声/青年/高音</button>
+                                <button type="button" class="tag voice-preset" data-instruct="male, middle-aged, low pitch">男声/中年/低音</button>
+                                <button type="button" class="tag voice-preset" data-instruct="female, whisper">女声/耳语</button>
+                                <button type="button" class="tag voice-preset" data-instruct="child">童声</button>
                             </div>
                         </div>
                     </div>
@@ -1170,9 +1180,43 @@
     </div>
 
     <script>
-        // ========================================
-        // Utility Functions
-        // ========================================
+        const EMPTY_VOICE_STATE = `
+            <div class="list__empty">
+                <svg class="list__empty-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
+                    <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+                    <line x1="12" x2="12" y1="19" y2="22"/>
+                </svg>
+                <p class="list__empty-text">暂无音色，请先克隆</p>
+            </div>
+        `;
+
+        const EMPTY_OUTPUT_STATE = `
+            <div class="list__empty">
+                <svg class="list__empty-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+                    <path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>
+                    <path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
+                </svg>
+                <p class="list__empty-text">暂无合成记录</p>
+            </div>
+        `;
+
+        const DEFAULT_FILE_ICON = `
+            <svg class="file-input__icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="17 8 12 3 7 8"/>
+                <line x1="12" x2="12" y1="3" y2="15"/>
+            </svg>
+        `;
+
+        const SELECTED_FILE_ICON = `
+            <svg class="file-input__icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+                <polyline points="22 4 12 14.01 9 11.01"/>
+            </svg>
+        `;
+
         function showToast(message, type = 'success') {
             const toast = document.getElementById('toast');
             const toastText = document.getElementById('toastText');
@@ -1200,10 +1244,176 @@
             document.getElementById('synthInstruct').value = value;
         }
 
-        // ========================================
-        // Accordion Toggle
-        // ========================================
-        document.querySelectorAll('.accordion__header').forEach(header => {
+        async function parseApiResponse(response) {
+            let payload = {};
+            try {
+                payload = await response.json();
+            } catch (error) {
+                payload = {};
+            }
+
+            if (!response.ok) {
+                throw new Error(payload.message || payload.detail || `请求失败 (${response.status})`);
+            }
+
+            return payload;
+        }
+
+        function renderRefAudioLabel(fileName = '') {
+            const refAudioLabel = document.getElementById('refAudioLabel');
+            if (!refAudioLabel) return;
+
+            const hasFile = Boolean(fileName);
+            refAudioLabel.classList.toggle('file-input__label--has-file', hasFile);
+            refAudioLabel.innerHTML = hasFile ? SELECTED_FILE_ICON : DEFAULT_FILE_ICON;
+
+            const primary = document.createElement('span');
+            primary.className = 'file-input__text';
+            primary.textContent = hasFile ? `已选择: ${fileName}` : '点击上传音频文件';
+
+            const secondary = document.createElement('span');
+            secondary.className = 'file-input__text file-input__text--primary';
+            secondary.textContent = hasFile ? '点击更换文件' : '支持 mp3, wav, m4a 等格式';
+
+            refAudioLabel.append(primary, secondary);
+        }
+
+        function createListItem(title, meta, buttonLabel, buttonClass, onClick) {
+            const item = document.createElement('div');
+            item.className = 'list__item';
+            item.setAttribute('role', 'listitem');
+
+            const info = document.createElement('div');
+            info.className = 'list__info';
+
+            const titleEl = document.createElement('div');
+            titleEl.className = 'list__title';
+            titleEl.textContent = title;
+
+            const metaEl = document.createElement('div');
+            metaEl.className = 'list__meta';
+            metaEl.textContent = meta;
+
+            info.append(titleEl, metaEl);
+
+            const actions = document.createElement('div');
+            actions.className = 'list__actions';
+
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = buttonClass;
+            button.textContent = buttonLabel;
+            button.addEventListener('click', onClick);
+
+            actions.appendChild(button);
+            item.append(info, actions);
+            return item;
+        }
+
+        function renderVoiceOptions(voices, preferredVoiceId = '') {
+            const synthVoice = document.getElementById('synthVoiceId');
+            if (!synthVoice) return;
+
+            synthVoice.replaceChildren();
+
+            const autoOption = document.createElement('option');
+            autoOption.value = '';
+            autoOption.textContent = '-- 自动选择音色（Auto Voice） --';
+            synthVoice.appendChild(autoOption);
+
+            voices.forEach((voice) => {
+                const option = document.createElement('option');
+                option.value = voice.voice_id;
+                option.textContent = voice.voice_name;
+                synthVoice.appendChild(option);
+            });
+
+            if (preferredVoiceId && voices.some((voice) => voice.voice_id === preferredVoiceId)) {
+                synthVoice.value = preferredVoiceId;
+            }
+        }
+
+        function renderVoiceList(voices) {
+            const voiceList = document.getElementById('voiceList');
+            if (!voiceList) return;
+
+            if (!voices.length) {
+                voiceList.innerHTML = EMPTY_VOICE_STATE;
+                return;
+            }
+
+            voiceList.replaceChildren();
+            voices.forEach((voice) => {
+                const item = createListItem(
+                    voice.voice_name,
+                    `创建时间: ${voice.created_time}`,
+                    '使用',
+                    'list__btn',
+                    () => useVoice(voice.voice_id),
+                );
+                voiceList.appendChild(item);
+            });
+        }
+
+        function renderOutputList(outputs) {
+            const outputList = document.getElementById('outputList');
+            if (!outputList) return;
+
+            if (!outputs.length) {
+                outputList.innerHTML = EMPTY_OUTPUT_STATE;
+                return;
+            }
+
+            outputList.replaceChildren();
+            outputs.forEach((output) => {
+                const item = createListItem(
+                    output.filename,
+                    `${output.created_time} · ${(output.size / 1024).toFixed(1)} KB`,
+                    '播放',
+                    'list__btn list__btn--play',
+                    () => playAudio(output.filename),
+                );
+                outputList.appendChild(item);
+            });
+        }
+
+        async function loadVoices(preferredVoiceId = '') {
+            try {
+                const response = await fetch('/api/voice/list');
+                const result = await parseApiResponse(response);
+                const voices = Array.isArray(result.voices) ? result.voices : [];
+                const selectedVoiceId = preferredVoiceId || document.getElementById('synthVoiceId').value;
+                renderVoiceList(voices);
+                renderVoiceOptions(voices, selectedVoiceId);
+            } catch (error) {
+                console.error('加载音色列表失败:', error);
+            }
+        }
+
+        async function loadOutputs() {
+            try {
+                const response = await fetch('/api/output/list');
+                const result = await parseApiResponse(response);
+                renderOutputList(Array.isArray(result.outputs) ? result.outputs : []);
+            } catch (error) {
+                console.error('加载输出列表失败:', error);
+            }
+        }
+
+        function useVoice(voiceId) {
+            document.getElementById('synthVoiceId').value = voiceId;
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+
+        function playAudio(filename) {
+            const audio = new Audio(`/api/output/${encodeURIComponent(filename)}`);
+            audio.play().catch((error) => {
+                console.error('播放失败:', error);
+                showToast('播放失败，请稍后重试', 'error');
+            });
+        }
+
+        document.querySelectorAll('.accordion__header').forEach((header) => {
             header.addEventListener('click', () => {
                 const isExpanded = header.getAttribute('aria-expanded') === 'true';
                 header.setAttribute('aria-expanded', !isExpanded);
@@ -1212,10 +1422,7 @@
             });
         });
 
-        // ========================================
-        // Range Slider Value Updates
-        // ========================================
-        const rangeInputs = [
+        [
             { input: 'synthSpeed', value: 'synthSpeedValue' },
             { input: 'synthNumStep', value: 'synthNumStepValue' },
             { input: 'synthGuidance', value: 'synthGuidanceValue' },
@@ -1223,9 +1430,7 @@
             { input: 'synthLayerPenalty', value: 'synthLayerPenaltyValue' },
             { input: 'synthPosTemp', value: 'synthPosTempValue' },
             { input: 'synthClassTemp', value: 'synthClassTempValue' },
-        ];
-
-        rangeInputs.forEach(({ input, value }) => {
+        ].forEach(({ input, value }) => {
             const inputEl = document.getElementById(input);
             const valueEl = document.getElementById(value);
 
@@ -1236,7 +1441,6 @@
             }
         });
 
-        // Duration special handling
         const durationInput = document.getElementById('synthDuration');
         const durationValue = document.getElementById('synthDurationValue');
         if (durationInput && durationValue) {
@@ -1245,52 +1449,44 @@
             });
         }
 
-        // ========================================
-        // File Input
-        // ========================================
         const refAudioInput = document.getElementById('refAudio');
-        const refAudioLabel = document.getElementById('refAudioLabel');
-
-        if (refAudioInput && refAudioLabel) {
-            refAudioInput.addEventListener('change', (e) => {
-                if (e.target.files.length > 0) {
-                    refAudioLabel.classList.add('file-input__label--has-file');
-                    refAudioLabel.innerHTML = `
-                        <svg class="file-input__icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
-                            <polyline points="22 4 12 14.01 9 11.01"/>
-                        </svg>
-                        <span class="file-input__text">已选择: ${e.target.files[0].name}</span>
-                        <span class="file-input__text file-input__text--primary">点击更换文件</span>
-                    `;
-                } else {
-                    refAudioLabel.classList.remove('file-input__label--has-file');
-                    refAudioLabel.innerHTML = `
-                        <svg class="file-input__icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                            <polyline points="17 8 12 3 7 8"/>
-                            <line x1="12" x2="12" y1="3" y2="15"/>
-                        </svg>
-                        <span class="file-input__text">点击上传音频文件</span>
-                        <span class="file-input__text file-input__text--primary">支持 mp3, wav, m4a 等格式</span>
-                    `;
-                }
+        if (refAudioInput) {
+            refAudioInput.addEventListener('change', (event) => {
+                const fileName = event.target.files.length > 0 ? event.target.files[0].name : '';
+                renderRefAudioLabel(fileName);
             });
         }
 
-        // ========================================
-        // Voice Clone Form
-        // ========================================
-        document.getElementById('cloneForm').addEventListener('submit', async (e) => {
-            e.preventDefault();
+        document.querySelectorAll('.voice-preset').forEach((button) => {
+            button.addEventListener('click', () => {
+                setInstruct(button.dataset.instruct || '');
+            });
+        });
+
+        document.querySelectorAll('.tag[data-tag]').forEach((tag) => {
+            tag.addEventListener('click', () => {
+                const textarea = document.getElementById('synthText');
+                const tagText = tag.dataset.tag;
+                const cursorPos = textarea.selectionStart;
+                const textBefore = textarea.value.substring(0, cursorPos);
+                const textAfter = textarea.value.substring(cursorPos);
+                textarea.value = `${textBefore} ${tagText} ${textAfter}`;
+                textarea.focus();
+                textarea.selectionStart = textarea.selectionEnd = cursorPos + tagText.length + 2;
+            });
+        });
+
+        document.getElementById('cloneForm').addEventListener('submit', async (event) => {
+            event.preventDefault();
             const btn = document.getElementById('cloneBtn');
             const btnText = document.getElementById('cloneBtnText');
             const originalText = btnText.textContent;
             setLoading(btn, true, originalText);
 
-            const voiceName = document.getElementById('voiceName').value;
+            const voiceName = document.getElementById('voiceName').value.trim();
             const refAudio = document.getElementById('refAudio').files[0];
-            const refText = document.getElementById('refText').value || null;
+            const refText = document.getElementById('refText').value.trim();
+            const rebuild = document.getElementById('cloneRebuild').checked;
 
             if (!refAudio) {
                 showToast('请选择参考音频', 'error');
@@ -1302,55 +1498,41 @@
                 const formData = new FormData();
                 formData.append('voice_name', voiceName);
                 formData.append('ref_audio', refAudio);
-                formData.append('ref_text', refText);
+                formData.append('rebuild', rebuild);
+                if (refText) {
+                    formData.append('ref_text', refText);
+                }
 
                 const response = await fetch('/api/voice/clone', {
                     method: 'POST',
                     body: formData,
                 });
+                const result = await parseApiResponse(response);
 
-                const result = await response.json();
-
-                if (result.success) {
-                    showToast('音色克隆成功！');
-                    loadVoices();
-                    e.target.reset();
-                    refAudioLabel.classList.remove('file-input__label--has-file');
-                    refAudioLabel.innerHTML = `
-                        <svg class="file-input__icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                            <polyline points="17 8 12 3 7 8"/>
-                            <line x1="12" x2="12" y1="3" y2="15"/>
-                        </svg>
-                        <span class="file-input__text">点击上传音频文件</span>
-                        <span class="file-input__text file-input__text--primary">支持 mp3, wav, m4a 等格式</span>
-                    `;
-                } else {
-                    showToast(result.message || '克隆失败', 'error');
-                }
+                showToast(result.message || '音色克隆成功');
+                event.target.reset();
+                renderRefAudioLabel();
+                await loadVoices(result.voice_id || '');
             } catch (error) {
-                showToast('克隆失败: ' + error.message, 'error');
+                showToast(`克隆失败: ${error.message}`, 'error');
             }
 
             setLoading(btn, false, originalText);
         });
 
-        // ========================================
-        // Synthesize Form
-        // ========================================
-        document.getElementById('synthForm').addEventListener('submit', async (e) => {
-            e.preventDefault();
+        document.getElementById('synthForm').addEventListener('submit', async (event) => {
+            event.preventDefault();
             const btn = document.getElementById('synthBtn');
             const btnText = document.getElementById('synthBtnText');
             const originalText = btnText.textContent;
             setLoading(btn, true, originalText);
 
-            const voiceId = document.getElementById('synthVoiceId').value;
-            const text = document.getElementById('synthText').value;
+            const voiceId = document.getElementById('synthVoiceId').value.trim();
+            const text = document.getElementById('synthText').value.trim();
             const language = document.getElementById('synthLanguage').value;
             const speed = parseFloat(document.getElementById('synthSpeed').value);
             const duration = document.getElementById('synthDuration').value ? parseFloat(document.getElementById('synthDuration').value) : null;
-            const numStep = parseInt(document.getElementById('synthNumStep').value);
+            const numStep = parseInt(document.getElementById('synthNumStep').value, 10);
             const guidanceScale = parseFloat(document.getElementById('synthGuidance').value);
             const tShift = parseFloat(document.getElementById('synthTShift').value);
             const layerPenalty = parseFloat(document.getElementById('synthLayerPenalty').value);
@@ -1359,12 +1541,11 @@
             const denoise = document.getElementById('synthDenoise').checked;
             const preprocess = document.getElementById('synthPreprocess').checked;
             const postprocess = document.getElementById('synthPostprocess').checked;
-            const instruct = document.getElementById('synthInstruct').value || null;
+            const instruct = document.getElementById('synthInstruct').value.trim();
 
             try {
                 const formData = new FormData();
                 formData.append('text', text);
-                formData.append('voice_id', voiceId);
                 formData.append('language', language);
                 formData.append('speed', speed);
                 formData.append('num_step', numStep);
@@ -1377,151 +1558,35 @@
                 formData.append('preprocess_prompt', preprocess);
                 formData.append('postprocess_output', postprocess);
 
-                if (duration) formData.append('duration', duration);
-                if (instruct) formData.append('instruct', instruct);
+                if (voiceId) {
+                    formData.append('voice_id', voiceId);
+                }
+                if (duration !== null && !Number.isNaN(duration)) {
+                    formData.append('duration', duration);
+                }
+                if (instruct) {
+                    formData.append('instruct', instruct);
+                }
 
                 const response = await fetch('/api/synthesize', {
                     method: 'POST',
                     body: formData,
                 });
+                const result = await parseApiResponse(response);
 
-                const result = await response.json();
-
-                if (result.success) {
-                    showToast('语音合成成功！');
-                    loadOutputs();
-                } else {
-                    showToast(result.message || '合成失败', 'error');
-                }
+                showToast(result.message || '语音合成成功');
+                await loadOutputs();
             } catch (error) {
-                showToast('合成失败: ' + error.message, 'error');
+                showToast(`合成失败: ${error.message}`, 'error');
             }
 
             setLoading(btn, false, originalText);
         });
 
-        // ========================================
-        // Emotion Tags
-        // ========================================
-        document.querySelectorAll('.tag[data-tag]').forEach(tag => {
-            if (!tag.hasAttribute('onclick')) {
-                tag.addEventListener('click', () => {
-                    const textarea = document.getElementById('synthText');
-                    const tagText = tag.dataset.tag;
-                    const cursorPos = textarea.selectionStart;
-                    const textBefore = textarea.value.substring(0, cursorPos);
-                    const textAfter = textarea.value.substring(cursorPos);
-                    textarea.value = textBefore + ' ' + tagText + ' ' + textAfter;
-                    textarea.focus();
-                    textarea.selectionStart = textarea.selectionEnd = cursorPos + tagText.length + 2;
-                });
-            }
-        });
-
-        // ========================================
-        // Load Voices
-        // ========================================
-        async function loadVoices() {
-            try {
-                const response = await fetch('/api/voice/list');
-                const result = await response.json();
-
-                const voiceList = document.getElementById('voiceList');
-                const synthVoice = document.getElementById('synthVoiceId');
-
-                if (result.voices && result.voices.length > 0) {
-                    const voiceItems = result.voices.map(voice => `
-                        <div class="list__item" role="listitem">
-                            <div class="list__info">
-                                <div class="list__title">${voice.voice_name}</div>
-                                <div class="list__meta">创建时间: ${voice.created_time}</div>
-                            </div>
-                            <div class="list__actions">
-                                <button type="button" class="list__btn" onclick="useVoice('${voice.voice_id}')">使用</button>
-                            </div>
-                        </div>
-                    `).join('');
-
-                    voiceList.innerHTML = voiceItems;
-
-                    synthVoice.innerHTML = '<option value="">-- 选择音色 --</option>' +
-                        result.voices.map(v => `<option value="${v.voice_id}">${v.voice_name}</option>`).join('');
-                } else {
-                    voiceList.innerHTML = `
-                        <div class="list__empty">
-                            <svg class="list__empty-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                                <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
-                                <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
-                                <line x1="12" x2="12" y1="19" y2="22"/>
-                            </svg>
-                            <p class="list__empty-text">暂无音色，请先克隆</p>
-                        </div>
-                    `;
-                }
-            } catch (error) {
-                console.error('加载音色列表失败:', error);
-            }
-        }
-
-        // ========================================
-        // Load Outputs
-        // ========================================
-        async function loadOutputs() {
-            try {
-                const response = await fetch('/api/output/list');
-                const result = await response.json();
-
-                const outputList = document.getElementById('outputList');
-
-                if (result.outputs && result.outputs.length > 0) {
-                    const outputItems = result.outputs.map(output => `
-                        <div class="list__item" role="listitem">
-                            <div class="list__info">
-                                <div class="list__title">${output.filename}</div>
-                                <div class="list__meta">${output.created_time} · ${(output.size / 1024).toFixed(1)} KB</div>
-                            </div>
-                            <div class="list__actions">
-                                <button type="button" class="list__btn list__btn--play" onclick="playAudio('${output.filename}')">播放</button>
-                            </div>
-                        </div>
-                    `).join('');
-
-                    outputList.innerHTML = outputItems;
-                } else {
-                    outputList.innerHTML = `
-                        <div class="list__empty">
-                            <svg class="list__empty-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                                <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
-                                <path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>
-                                <path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
-                            </svg>
-                            <p class="list__empty-text">暂无合成记录</p>
-                        </div>
-                    `;
-                }
-            } catch (error) {
-                console.error('加载输出列表失败:', error);
-            }
-        }
-
-        function useVoice(voiceId) {
-            document.getElementById('synthVoiceId').value = voiceId;
-            document.getElementById('synthInstruct').value = '';
-            window.scrollTo({ top: 0, behavior: 'smooth' });
-        }
-
-        function playAudio(filename) {
-            const audio = new Audio(`/api/output/${filename}`);
-            audio.play();
-        }
-
-        // ========================================
-        // Initialize
-        // ========================================
+        renderRefAudioLabel();
         loadVoices();
         loadOutputs();
 
-        // Refresh every 10 seconds
         setInterval(() => {
             loadVoices();
             loadOutputs();

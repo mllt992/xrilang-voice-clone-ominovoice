@@ -1,37 +1,105 @@
 @echo off
+setlocal
 chcp 65001 >nul
-echo ========================================
-echo   OmniVoice 语音克隆服务启动器
-echo ========================================
-echo.
 
 cd /d "%~dp0"
 
-REM 设置 conda 环境路径（如果需要）
-if exist "D:\SotfwareData\MyAnconda\envs\omnivoice\python.exe" (
-    set PATH=D:\SotfwareData\MyAnconda\envs\omnivoice;D:\SotfwareData\MyAnconda\envs\omnivoice\Scripts;D:\SotfwareData\MyAnconda\envs\omnivoice\Library\bin;D:\SotfwareData\MyAnconda\envs\omnivoice\DLLs;%PATH%
-    echo 已配置 conda 环境路径
-    echo.
+if not defined ENV_NAME set "ENV_NAME=omnivoice"
+if not defined HOST set "HOST=127.0.0.1"
+if not defined PORT set "PORT=8000"
+set "RELOAD_FLAG="
+set "CUDA_VISIBLE_DEVICES=0"
+set "TF32=1"
+set "PYTHONUTF8=1"
+
+if /I "%DEV_RELOAD%"=="1" (
+    set "RELOAD_FLAG=--reload"
 )
 
-REM 检查并复制缺失的 DLL（如 liblzma.dll）
-if exist "D:\SotfwareData\MyAnconda\envs\omnivoice\Library\bin\liblzma.dll" (
-    if not exist "D:\SotfwareData\MyAnconda\envs\omnivoice\DLLs\liblzma.dll" (
-        copy /Y "D:\SotfwareData\MyAnconda\envs\omnivoice\Library\bin\liblzma.dll" "D:\SotfwareData\MyAnconda\envs\omnivoice\DLLs\liblzma.dll" >nul
-    )
-)
-
-REM 设置 HuggingFace Token（从环境变量读取，或直接填写）
-if not defined HF_TOKEN (
-    echo 警告: HF_TOKEN 未设置，下载可能较慢
-    echo 请运行前设置: set HF_TOKEN=hf_xxx
-    echo.
-)
-
-echo 正在启动服务...
-echo 请在浏览器中打开: http://localhost:8000
-echo 按 Ctrl+C 停止服务
+echo ========================================
+echo   OmniVoice local launcher
+echo ========================================
 echo.
 
-python -m uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
+where conda >nul 2>&1
+if errorlevel 1 (
+    echo [ERROR] conda was not found in PATH.
+    echo         Please install Anaconda or Miniconda first.
+    pause
+    exit /b 1
+)
+
+for /f "usebackq delims=" %%i in (`conda info --base 2^>nul`) do set "CONDA_BASE=%%i"
+if not defined CONDA_BASE (
+    echo [ERROR] Failed to locate the conda base directory.
+    pause
+    exit /b 1
+)
+
+call "%CONDA_BASE%\condabin\conda.bat" activate "%ENV_NAME%"
+if errorlevel 1 (
+    echo [ERROR] Failed to activate conda env "%ENV_NAME%".
+    echo         Please make sure the env already exists.
+    pause
+    exit /b 1
+)
+
+echo [INFO] Project: %CD%
+echo [INFO] Env: %ENV_NAME%
+echo.
+
+echo [INFO] Python executable:
+python -c "import sys; print(sys.executable)"
+if errorlevel 1 (
+    echo [ERROR] Python is not available after env activation.
+    pause
+    exit /b 1
+)
+
+echo.
+echo [INFO] Checking runtime packages...
+python -c "import sys, fastapi, soundfile, torch; print('Python:', sys.version.split()[0]); print('PyTorch:', torch.__version__); print('CUDA available:', torch.cuda.is_available())"
+if errorlevel 1 (
+    echo.
+    echo [ERROR] Missing runtime dependencies in env "%ENV_NAME%".
+    echo         Run:
+    echo           conda activate %ENV_NAME%
+    echo           pip install -r requirements.txt
+    echo.
+    pause
+    exit /b 1
+)
+
+if not defined HF_TOKEN (
+    echo.
+    echo [INFO] HF_TOKEN is not set in the current shell.
+    echo        This is OK if config.py already contains a valid token.
+)
+
+echo.
+echo [INFO] Starting server at http://%HOST%:%PORT%
+if defined RELOAD_FLAG (
+    echo [INFO] Dev reload is enabled.
+)
+echo [INFO] Press Ctrl+C to stop.
+echo.
+
+netstat -ano -p tcp | findstr /R /C:":%PORT% .*LISTENING" >nul 2>&1
+if not errorlevel 1 (
+    echo [ERROR] Port %PORT% is already in use on %HOST%.
+    echo         Try another port, for example:
+    echo           set PORT=8001 ^&^& ??????.bat
+    echo.
+    pause
+    exit /b 1
+)
+
+python -m uvicorn api.main:app --host %HOST% --port %PORT% %RELOAD_FLAG%
+set "APP_EXIT=%ERRORLEVEL%"
+
+if not "%APP_EXIT%"=="0" (
+    echo.
+    echo [ERROR] Server exited with code %APP_EXIT%.
+)
+
 pause

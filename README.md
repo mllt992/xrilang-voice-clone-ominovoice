@@ -1,156 +1,194 @@
-# OmniVoice 语音克隆服务 MVP
+# OmniVoice 语音克隆服务
 
-基于 OmniVoice 的语音克隆服务，提供音色克隆和语音合成功能。
+基于 [k2-fsa/OmniVoice](https://github.com/k2-fsa/OmniVoice) 的本地 Web 服务，提供音色克隆、Voice Design、Auto Voice 和语音合成能力。
 
-## 功能特性
+## 当前增强点
 
-- 🎙️ **音色克隆**：上传音频文件，克隆音色
-- 🔊 **语音合成**：使用克隆的音色合成任意文本
-- 📋 **音色管理**：查看和管理已克隆的音色
-- 📁 **历史记录**：查看和管理合成音频
+- 支持 `音色克隆`、`Voice Design`、`Auto Voice`
+- 支持 `已克隆音色 + instruct` 组合使用
+- 支持同名音色 `强制重建`
+- 增加了上传大小限制、文件名校验和输出路径安全校验
+- 优化了输出文件命名，避免并发下文件名冲突
+- Web UI 去掉了动态 HTML 注入风险点
+- 启动脚本默认使用 `conda` 环境 `omnivoice`
 
 ## 项目结构
 
-```
+```text
 xrilang-voice-clone-ominovoice/
-├── config.example.py   # 配置示例（复制为 config.py）
-├── config.py           # 本地配置文件（不提交）
-├── core/              # 核心库
-│   └── __init__.py   # 语音克隆核心功能
-├── api/               # FastAPI 服务
-│   └── main.py       # API 路由
-├── static/            # 前端静态文件
-│   └── index.html    # Web 界面
-├── voices/            # 音色文件目录 (.pt)
-├── outputs/           # 合成音频输出目录
-├── requirements.txt   # Python 依赖
-├── 启动服务.bat        # Windows 启动脚本
+├── api/
+│   └── main.py
+├── core/
+│   ├── __init__.py
+│   ├── service_utils.py
+│   └── voice_clone_prompt.py
+├── static/
+│   └── index.html
+├── voices/
+├── outputs/
+├── config.example.py
+├── requirements.txt
+├── 启动服务.bat
 └── README.md
 ```
 
+## 环境要求
+
+- 已存在 `conda` 环境：`omnivoice`
+- Python 3.10+
+- CUDA GPU 推荐
+- `ffmpeg`
+
 ## 快速开始
 
-### 环境要求
-
-- Python 3.10+
-- CUDA GPU (推荐，CPU 也可运行但较慢)
-- ffmpeg (自动检测，如未找到请安装)
-
-### 1. 配置
-
-复制配置示例文件并填入你的 Token：
+### 1. 切换到 `omnivoice` 环境
 
 ```bash
-cp config.example.py config.py
+conda activate omnivoice
 ```
-
-然后编辑 `config.py`，填入你的 HuggingFace Token：
-
-```python
-HF_TOKEN = "hf_your_token_here"  # 第 18 行
-```
-
-获取 Token: https://huggingface.co/settings/tokens
 
 ### 2. 安装依赖
 
 ```bash
-pip install omnivoice fastapi uvicorn python-multipart pydub soundfile
+pip install -r requirements.txt
 ```
 
-### 3. 安装 ffmpeg
+如果 `torch` 尚未安装，请按你的 CUDA 版本先安装 PyTorch，再执行上面的命令。
+
+### 3. 配置
+
+复制配置文件：
 
 ```bash
-# Windows
-winget install ffmpeg
-
-# Mac
-brew install ffmpeg
-
-# Linux
-sudo apt install ffmpeg
+copy config.example.py config.py
 ```
 
-### 4. 启动服务
+然后编辑 `config.py`：
 
-```bash
-# Windows
+```python
+HF_TOKEN = "hf_xxx"
+```
+
+如果你已经在系统环境变量里设置了 `HF_TOKEN`，服务会优先使用环境变量。
+
+### 4. 启动
+
+Windows 下直接双击：
+
+```text
 启动服务.bat
-
-# 或手动启动
-python -m uvicorn api.main:app --host 0.0.0.0 --port 8000
 ```
 
-### 5. 访问服务
+或命令行启动：
 
-打开浏览器访问: http://localhost:8000
+```bash
+conda run -n omnivoice python -m uvicorn api.main:app --host 127.0.0.1 --port 8000
+```
 
-## API 接口
+启动后访问：
+
+```text
+http://127.0.0.1:8000
+```
+
+## 使用说明
 
 ### 音色克隆
-```
-POST /api/voice/clone
-Form Data:
-  - voice_name: 音色名称
-  - ref_audio: 参考音频文件
-  - ref_text: (可选) 参考音频文本
+
+- 音色名称只允许字母、数字、下划线、短横线
+- 参考音频建议 3-10 秒
+- 如果已存在同名音色，不勾选“强制重建”时会直接复用缓存
+
+### 语音合成
+
+支持 3 种模式：
+
+1. `Auto Voice`
+   不选音色，也不填 `instruct`
+2. `Voice Design`
+   不选音色，只填 `instruct`
+3. `Voice Clone + instruct`
+   选中已有音色，同时填写 `instruct`
+
+官方 OmniVoice 对中文方言场景建议结合 `ref_audio + instruct` 使用，本项目已支持这一组合。
+
+## API
+
+### 健康检查
+
+```http
+GET /api/health
 ```
 
-### 音色列表
+### 克隆音色
+
+```http
+POST /api/voice/clone
+Content-Type: multipart/form-data
 ```
+
+字段：
+
+- `voice_name`: 音色名称
+- `ref_audio`: 参考音频
+- `ref_text`: 可选，参考音频文本
+- `rebuild`: 可选，是否强制重建
+
+### 音色列表
+
+```http
 GET /api/voice/list
 ```
 
-### 语音合成
-```
+### 合成语音
+
+```http
 POST /api/synthesize
-Form Data:
-  - text: 要合成的文本
-  - voice_id: 音色 ID
-  - language: 语言 (Chinese/English/Japanese)
-  - speed: 语速 (0.5-2.0)
+Content-Type: multipart/form-data
 ```
 
-### 合成音频列表
-```
+字段：
+
+- `text`: 待合成文本
+- `voice_id`: 可选，留空时可走 Auto Voice 或纯 Voice Design
+- `language`: 语言
+- `speed`: 语速
+- `duration`: 固定时长
+- `num_step`: 推理步数
+- `guidance_scale`: 引导强度
+- `t_shift`: 时间偏移
+- `layer_penalty_factor`: 层惩罚
+- `position_temperature`: 位置温度
+- `class_temperature`: 类别温度
+- `denoise`: 去噪
+- `preprocess_prompt`: 预处理参考音频
+- `postprocess_output`: 后处理输出
+- `instruct`: 可选，Voice Design 指令
+
+### 合成历史
+
+```http
 GET /api/output/list
 ```
 
-## 使用示例
+### 播放/下载输出
 
-### Python 调用
-
-```python
-import sys
-sys.path.insert(0, 'path/to/project')
-
-from core import clone_voice, synthesize, list_voices
-
-# 克隆音色
-result = clone_voice(
-    ref_audio="参考音频.mp3",
-    voice_name="my_voice",
-    ref_text=None  # 自动转录
-)
-print(result)
-
-# 合成语音
-result = synthesize(
-    text="要合成的文本内容",
-    voice_id="my_voice",
-    language="Chinese",
-    speed=1.0
-)
-print(result)
-
-# 查看音色列表
-voices = list_voices()
-print(voices)
+```http
+GET /api/output/{filename}
 ```
 
-## 技术栈
+## 配置项
 
-- **模型**: OmniVoice (k2-fsa/OmniVoice)
-- **后端**: FastAPI + Uvicorn
-- **前端**: HTML5 + CSS3 + JavaScript
-- **音频处理**: pydub, soundfile
+`config.example.py` 中新增了这些可选项：
+
+- `MAX_UPLOAD_MB`
+- `MAX_TEXT_LENGTH`
+- `DEFAULT_AUDIO_CHUNK_DURATION`
+- `DEFAULT_AUDIO_CHUNK_THRESHOLD`
+- `ALLOWED_AUDIO_EXTENSIONS`
+
+## 注意事项
+
+- `voices/` 和 `outputs/` 默认是本地缓存目录，不要直接暴露给公网下载
+- 如果要对外提供服务，建议再加鉴权、限流和异步任务队列
+- 当前仓库更适合作为本地或内网推理服务，而不是公网开放平台

@@ -23,6 +23,25 @@ VOICES_DIR = PROJECT_ROOT / "voices"
 # 合成音频输出目录
 OUTPUT_DIR = PROJECT_ROOT / "outputs"
 
+# Web 服务与输入限制
+MAX_UPLOAD_MB = 20
+MAX_TEXT_LENGTH = 3000
+
+# 长文本分段生成默认参数
+DEFAULT_AUDIO_CHUNK_DURATION = 15.0
+DEFAULT_AUDIO_CHUNK_THRESHOLD = 30.0
+
+# 允许上传的参考音频格式
+ALLOWED_AUDIO_EXTENSIONS = (
+    ".wav",
+    ".mp3",
+    ".m4a",
+    ".flac",
+    ".ogg",
+    ".aac",
+    ".webm",
+)
+
 
 def _find_ffmpeg() -> list:
     """自动查找 ffmpeg 路径"""
