@@ -979,9 +979,9 @@
                             <div class="range" style="margin-bottom: var(--space-4);">
                                 <div class="range__header">
                                     <label for="synthNumStep" class="range__label">推理步数</label>
-                                    <span class="range__value" id="synthNumStepValue">16</span>
+                                    <span class="range__value" id="synthNumStepValue">32</span>
                                 </div>
-                                <input type="range" id="synthNumStep" class="range__input" min="4" max="64" step="1" value="16">
+                                <input type="range" id="synthNumStep" class="range__input" min="4" max="64" step="1" value="32">
                                 <p class="range__hint">越大质量越好，越慢</p>
                             </div>
 
@@ -1057,7 +1057,18 @@
                                     <input type="checkbox" id="synthPostprocess" class="checkbox__input" checked>
                                     <span class="checkbox__label">后处理</span>
                                 </label>
+                                <label class="checkbox">
+                                    <input type="checkbox" id="synthAutoProsody" class="checkbox__input" checked>
+                                    <span class="checkbox__label">自动韵律</span>
+                                </label>
+                                <label class="checkbox">
+                                    <input type="checkbox" id="synthAutoProsodyDebug" class="checkbox__input">
+                                    <span class="checkbox__label">返回调试信息</span>
+                                </label>
                             </div>
+                            <p class="form-hint" style="margin-top: var(--space-3);">
+                                自动韵律会按句切分文本，在疑问、感叹、叹息和停顿处轻微调整语速与停顿；如果设置了固定时长，则会自动关闭。
+                            </p>
                         </div>
                     </div>
 
@@ -1542,6 +1553,8 @@
             const denoise = document.getElementById('synthDenoise').checked;
             const preprocess = document.getElementById('synthPreprocess').checked;
             const postprocess = document.getElementById('synthPostprocess').checked;
+            const autoProsody = document.getElementById('synthAutoProsody').checked;
+            const autoProsodyDebug = document.getElementById('synthAutoProsodyDebug').checked;
             const instruct = document.getElementById('synthInstruct').value.trim();
 
             try {
@@ -1558,6 +1571,8 @@
                 formData.append('denoise', denoise);
                 formData.append('preprocess_prompt', preprocess);
                 formData.append('postprocess_output', postprocess);
+                formData.append('auto_prosody', autoProsody);
+                formData.append('auto_prosody_debug', autoProsodyDebug);
 
                 if (voiceId) {
                     formData.append('voice_id', voiceId);
@@ -1575,6 +1590,9 @@
                 });
                 const result = await parseApiResponse(response);
 
+                if (result.auto_prosody_plan) {
+                    console.debug('Auto prosody plan', result.auto_prosody_plan);
+                }
                 showToast(result.message || '语音合成成功');
                 await loadOutputs();
             } catch (error) {

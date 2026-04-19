@@ -134,7 +134,7 @@ async def api_synthesize(
     speed: float = Form(1.0),
     duration: Optional[float] = Form(None),
     # Quality
-    num_step: int = Form(16),
+    num_step: int = Form(32),
     guidance_scale: float = Form(2.0),
     # Advanced
     t_shift: float = Form(0.1),
@@ -147,6 +147,8 @@ async def api_synthesize(
     postprocess_output: bool = Form(True),
     audio_chunk_duration: float = Form(15.0),
     audio_chunk_threshold: float = Form(30.0),
+    auto_prosody: bool = Form(True),
+    auto_prosody_debug: bool = Form(False),
     # Voice Design
     instruct: Optional[str] = Form(None),
 ):
@@ -187,6 +189,8 @@ async def api_synthesize(
         postprocess_output=postprocess_output,
         audio_chunk_duration=audio_chunk_duration,
         audio_chunk_threshold=audio_chunk_threshold,
+        auto_prosody=auto_prosody,
+        auto_prosody_debug=auto_prosody_debug,
         instruct=instruct,
     )
     return _result_response(result)

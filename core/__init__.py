@@ -1,8 +1,4 @@
 # -*- coding: utf-8 -*-
-"""
-语音克隆核心库
-依赖: pip install omnivoice (从 pip 安装即可，VoiceClonePrompt 使用本地兼容版本)
-"""
 from __future__ import annotations
 
 import logging
@@ -12,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+import numpy as np
 import soundfile as sf
 import torch
 
@@ -38,33 +35,27 @@ else:
 
 from omnivoice import OmniVoice
 
-# VoiceClonePrompt 使用本地兼容版本（pip 版本未导出）
-from core.voice_clone_prompt import VoiceClonePrompt
+from core.expressive_text import build_auto_prosody_plan
 from core.service_utils import (
     build_output_filename,
     clean_optional_text,
     resolve_file_in_dir,
     validate_voice_name,
 )
+from core.voice_clone_prompt import VoiceClonePrompt
+from config import FFMPEG_CANDIDATES, MODEL_NAME, OUTPUT_DIR, VOICES_DIR
 
-from config import (
-    MODEL_NAME,
-    VOICES_DIR,
-    OUTPUT_DIR,
-    FFMPEG_CANDIDATES,
-)
 
-# 全局模型实例（单例模式）
 _model_instance: Optional[OmniVoice] = None
 _model_lock = threading.RLock()
 
 MAX_TEXT_LENGTH = int(getattr(app_config, "MAX_TEXT_LENGTH", 3000))
 DEFAULT_AUDIO_CHUNK_DURATION = float(getattr(app_config, "DEFAULT_AUDIO_CHUNK_DURATION", 15.0))
 DEFAULT_AUDIO_CHUNK_THRESHOLD = float(getattr(app_config, "DEFAULT_AUDIO_CHUNK_THRESHOLD", 30.0))
+DEFAULT_AUTO_PROSODY = bool(getattr(app_config, "DEFAULT_AUTO_PROSODY", True))
 
 
 def _ensure_ffmpeg() -> None:
-    """设置 ffmpeg 到 PATH"""
     for ffmpeg_path in FFMPEG_CANDIDATES:
         if ffmpeg_path.exists():
             os.environ["PATH"] = str(ffmpeg_path.parent) + os.pathsep + os.environ.get("PATH", "")
@@ -74,7 +65,6 @@ def _ensure_ffmpeg() -> None:
 
 
 def _ensure_tf32() -> None:
-    """Enable TF32 for faster matrix operations on Ampere+ GPUs."""
     if torch.cuda.is_available():
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
@@ -94,9 +84,6 @@ def _get_model_dtype(device: str) -> torch.dtype:
 
 
 def get_model() -> OmniVoice:
-    """
-    获取全局模型实例（单例模式）
-    """
     global _model_instance
 
     if _model_instance is not None:
@@ -111,11 +98,14 @@ def get_model() -> OmniVoice:
 
         device = _get_best_device()
         dtype = _get_model_dtype(device)
-
-        # device_map="auto" 会自动在多设备间分配模型层
         device_map_strategy = "auto" if device == "cuda" else device
 
-        logging.info("Loading OmniVoice on %s with dtype=%s, device_map=%s", device, dtype, device_map_strategy)
+        logging.info(
+            "Loading OmniVoice on %s with dtype=%s, device_map=%s",
+            device,
+            dtype,
+            device_map_strategy,
+        )
         _model_instance = OmniVoice.from_pretrained(
             MODEL_NAME,
             device_map=device_map_strategy,
@@ -123,9 +113,117 @@ def get_model() -> OmniVoice:
             load_asr=True,
             low_cpu_mem_usage=True,
         )
-        logging.info("Model loaded successfully!")
-
+        logging.info("Model loaded successfully")
         return _model_instance
+
+
+def _build_generation_config(
+    *,
+    num_step: int,
+    guidance_scale: float,
+    t_shift: float,
+    layer_penalty_factor: float,
+    position_temperature: float,
+    class_temperature: float,
+    denoise: bool,
+    preprocess_prompt: bool,
+    postprocess_output: bool,
+    audio_chunk_duration: float,
+    audio_chunk_threshold: float,
+):
+    from omnivoice import OmniVoiceGenerationConfig
+
+    config_kwargs = dict(
+        num_step=num_step,
+        guidance_scale=guidance_scale,
+        t_shift=t_shift,
+        layer_penalty_factor=layer_penalty_factor,
+        position_temperature=position_temperature,
+        class_temperature=class_temperature,
+        denoise=denoise,
+        preprocess_prompt=preprocess_prompt,
+        postprocess_output=postprocess_output,
+        audio_chunk_duration=audio_chunk_duration,
+        audio_chunk_threshold=audio_chunk_threshold,
+    )
+
+    try:
+        return OmniVoiceGenerationConfig(**config_kwargs)
+    except TypeError:
+        config_kwargs.pop("audio_chunk_duration", None)
+        config_kwargs.pop("audio_chunk_threshold", None)
+        return OmniVoiceGenerationConfig(**config_kwargs)
+
+
+def _build_generation_kwargs(
+    *,
+    text: str,
+    language: str,
+    generation_config,
+    speed: float,
+    duration: Optional[float],
+    voice_prompt: Optional[VoiceClonePrompt],
+    instruct: Optional[str],
+) -> dict:
+    kwargs = {
+        "text": text,
+        "language": language,
+        "generation_config": generation_config,
+    }
+
+    if speed != 1.0:
+        kwargs["speed"] = speed
+    if duration is not None:
+        kwargs["duration"] = duration
+    if voice_prompt is not None:
+        kwargs["voice_clone_prompt"] = voice_prompt
+    if instruct:
+        kwargs["instruct"] = instruct
+
+    return kwargs
+
+
+def _generate_audio_array(
+    model: OmniVoice,
+    *,
+    text: str,
+    language: str,
+    generation_config,
+    speed: float,
+    duration: Optional[float],
+    voice_prompt: Optional[VoiceClonePrompt],
+    instruct: Optional[str],
+) -> np.ndarray:
+    kwargs = _build_generation_kwargs(
+        text=text,
+        language=language,
+        generation_config=generation_config,
+        speed=speed,
+        duration=duration,
+        voice_prompt=voice_prompt,
+        instruct=instruct,
+    )
+    audios = model.generate(**kwargs)
+    return np.asarray(audios[0], dtype=np.float32)
+
+
+def _append_silence(chunks: list[np.ndarray], sample_rate: int, pause_ms: int) -> None:
+    if pause_ms <= 0:
+        return
+
+    silence_length = max(1, int(sample_rate * pause_ms / 1000.0))
+    chunks.append(np.zeros(silence_length, dtype=np.float32))
+
+
+def _resolve_voice_mode(has_voice_prompt: bool, instruct: Optional[str], auto_prosody_used: bool) -> str:
+    voice_mode = "auto_voice"
+    if has_voice_prompt:
+        voice_mode = "voice_clone"
+    if instruct:
+        voice_mode = "voice_clone+instruct" if has_voice_prompt else "voice_design"
+    if auto_prosody_used:
+        voice_mode = f"{voice_mode}+auto_prosody"
+    return voice_mode
 
 
 def clone_voice(
@@ -134,24 +232,6 @@ def clone_voice(
     ref_text: Optional[str] = None,
     rebuild: bool = False,
 ) -> dict:
-    """
-    从参考音频克隆音色
-
-    Args:
-        ref_audio: 参考音频文件路径
-        voice_name: 音色名称（用于保存 .pt 文件）
-        ref_text: 参考音频文本（None = 自动转录）
-        rebuild: 是否强制重建
-
-    Returns:
-        {
-            "success": bool,
-            "voice_id": str,
-            "voice_name": str,
-            "pt_path": str,
-            "message": str
-        }
-    """
     try:
         voice_name = validate_voice_name(voice_name)
     except ValueError as exc:
@@ -201,7 +281,6 @@ def clone_voice(
                 ref_text=ref_text,
                 preprocess_prompt=True,
             )
-            # 转换为本地 VoiceClonePrompt（支持 save 方法）
             prompt = VoiceClonePrompt(
                 ref_audio_tokens=raw_prompt.ref_audio_tokens,
                 ref_text=raw_prompt.ref_text,
@@ -219,15 +298,15 @@ def clone_voice(
             "pt_path": str(pt_path),
             "message": "音色克隆成功",
         }
-    except Exception as e:
-        logging.error("Voice clone failed: %s", str(e))
+    except Exception as exc:
+        logging.error("Voice clone failed: %s", str(exc))
         return {
             "success": False,
             "status_code": 500,
             "voice_id": voice_name,
             "voice_name": voice_name,
             "pt_path": str(pt_path),
-            "message": f"音色克隆失败: {str(e)}",
+            "message": f"音色克隆失败: {str(exc)}",
         }
 
 
@@ -236,61 +315,23 @@ def synthesize(
     voice_id: Optional[str] = None,
     language: str = "Chinese",
     output_filename: Optional[str] = None,
-    # Speed & Duration
     speed: float = 1.0,
     duration: Optional[float] = None,
-    # Quality
-    num_step: int = 16,
+    num_step: int = 32,
     guidance_scale: float = 2.0,
-    # Advanced
     t_shift: float = 0.1,
     layer_penalty_factor: float = 5.0,
     position_temperature: float = 5.0,
     class_temperature: float = 0.0,
-    # Options
     denoise: bool = True,
     preprocess_prompt: bool = True,
     postprocess_output: bool = True,
     audio_chunk_duration: float = DEFAULT_AUDIO_CHUNK_DURATION,
     audio_chunk_threshold: float = DEFAULT_AUDIO_CHUNK_THRESHOLD,
-    # Voice Design (can be combined with voice clone prompt)
+    auto_prosody: bool = DEFAULT_AUTO_PROSODY,
+    auto_prosody_debug: bool = False,
     instruct: Optional[str] = None,
 ) -> dict:
-    """
-    使用指定音色合成语音
-
-    Args:
-        text: 要合成的文本
-        voice_id: 音色 ID（可选，对应 voices/ 目录下的 .pt 文件）
-        language: 语言
-        output_filename: 输出文件名（None = 自动生成带时间戳的文件名）
-        speed: 语速 (0.5-2.0, 1.0=正常, >1加速, <1减速)
-        duration: 固定时长（秒），优先级高于 speed
-        num_step: 扩散步数 (4-64, 越大质量越好越慢)
-        guidance_scale: 引导强度 (0.0-5.0, 越高越符合描述)
-        t_shift: 时间偏移 (0.0-1.0, 影响语速变化感)
-        layer_penalty_factor: 层惩罚 (0.0-10.0, 影响声音层次感)
-        position_temperature: 位置温度 (0.0-10.0, 越高越随机)
-        class_temperature: 类别温度 (0.0-5.0, 越高越随机)
-        denoise: 是否去噪
-        preprocess_prompt: 是否预处理参考音频
-        postprocess_output: 是否后处理输出
-        audio_chunk_duration: 长文本分段目标时长
-        audio_chunk_threshold: 长文本启用分段的阈值
-        instruct: Voice Design 指令（可与 voice clone prompt 组合）
-
-    Returns:
-        {
-            "success": bool,
-            "text": str,
-            "voice_id": str,
-            "audio_path": str,
-            "sample_rate": int,
-            "message": str
-        }
-    """
-    from omnivoice import OmniVoiceGenerationConfig
-
     text = clean_optional_text(text)
     instruct = clean_optional_text(instruct)
     language = clean_optional_text(language) or "Chinese"
@@ -362,7 +403,7 @@ def synthesize(
             }
 
     try:
-        config_kwargs = dict(
+        gen_config = _build_generation_config(
             num_step=num_step,
             guidance_scale=guidance_scale,
             t_shift=t_shift,
@@ -376,41 +417,102 @@ def synthesize(
             audio_chunk_threshold=audio_chunk_threshold,
         )
 
-        try:
-            gen_config = OmniVoiceGenerationConfig(**config_kwargs)
-        except TypeError:
-            config_kwargs.pop("audio_chunk_duration", None)
-            config_kwargs.pop("audio_chunk_threshold", None)
-            gen_config = OmniVoiceGenerationConfig(**config_kwargs)
-
-        kw = dict(
-            text=text,
-            language=language,
-            generation_config=gen_config,
-        )
-
-        if speed != 1.0:
-            kw["speed"] = speed
-        if duration is not None:
-            kw["duration"] = duration
-
-        voice_mode = "auto_voice"
+        voice_prompt: Optional[VoiceClonePrompt] = None
         if normalized_voice_id:
             voice_prompt = VoiceClonePrompt.load(pt_path)
-            kw["voice_clone_prompt"] = voice_prompt
-            voice_mode = "voice_clone"
-        if instruct:
-            kw["instruct"] = instruct
-            voice_mode = "voice_clone+instruct" if normalized_voice_id else "voice_design"
 
         audio_path.parent.mkdir(parents=True, exist_ok=True)
+
+        auto_prosody_used = False
+        auto_prosody_reason = ""
+        auto_prosody_plan = None
+
         with _model_lock:
             model = get_model()
-            logging.info("Generating audio with mode=%s: %s", voice_mode, text[:50] + "..." if len(text) > 50 else text)
-            audios = model.generate(**kw)
-        sf.write(audio_path, audios[0], model.sampling_rate)
 
-        return {
+            if auto_prosody and duration is None:
+                auto_prosody_plan = build_auto_prosody_plan(
+                    text=text,
+                    language=language,
+                    base_speed=speed,
+                    base_instruct=instruct,
+                )
+                segments = auto_prosody_plan.segments
+                needs_segment_render = (
+                    len(segments) > 1
+                    or any(segment.injected_tag for segment in segments)
+                    or any(abs(segment.speed - speed) >= 0.02 for segment in segments)
+                    or any((segment.instruct_hint or "") != (instruct or "") for segment in segments)
+                )
+
+                if needs_segment_render:
+                    audio_chunks: list[np.ndarray] = []
+                    for index, segment in enumerate(segments):
+                        logging.info(
+                            "Auto prosody segment %s/%s style=%s speed=%.3f text=%s",
+                            index + 1,
+                            len(segments),
+                            segment.style,
+                            segment.speed,
+                            segment.render_text[:60] + "..." if len(segment.render_text) > 60 else segment.render_text,
+                        )
+                        audio_chunks.append(
+                            _generate_audio_array(
+                                model,
+                                text=segment.render_text,
+                                language=language,
+                                generation_config=gen_config,
+                                speed=segment.speed,
+                                duration=None,
+                                voice_prompt=voice_prompt,
+                                instruct=segment.instruct_hint,
+                            )
+                        )
+                        if index < len(segments) - 1:
+                            _append_silence(audio_chunks, model.sampling_rate, segment.pause_ms)
+
+                    audio = np.concatenate(audio_chunks) if audio_chunks else np.zeros(1, dtype=np.float32)
+                    auto_prosody_used = True
+                else:
+                    auto_prosody_reason = "文本不需要句级韵律调整。"
+                    audio = _generate_audio_array(
+                        model,
+                        text=auto_prosody_plan.normalized_text,
+                        language=language,
+                        generation_config=gen_config,
+                        speed=speed,
+                        duration=None,
+                        voice_prompt=voice_prompt,
+                        instruct=instruct,
+                    )
+            else:
+                if auto_prosody and duration is not None:
+                    auto_prosody_reason = "固定时长模式下不会启用自动韵律。"
+                audio = _generate_audio_array(
+                    model,
+                    text=text,
+                    language=language,
+                    generation_config=gen_config,
+                    speed=speed,
+                    duration=duration,
+                    voice_prompt=voice_prompt,
+                    instruct=instruct,
+                )
+
+        voice_mode = _resolve_voice_mode(
+            has_voice_prompt=voice_prompt is not None,
+            instruct=instruct,
+            auto_prosody_used=auto_prosody_used,
+        )
+        message = "语音合成成功"
+        if auto_prosody_used and auto_prosody_plan is not None:
+            message += f"（已启用自动韵律，{len(auto_prosody_plan.segments)} 段）"
+        elif auto_prosody_reason:
+            message += f"（自动韵律未生效：{auto_prosody_reason}）"
+
+        sf.write(audio_path, audio, model.sampling_rate)
+
+        response = {
             "success": True,
             "status_code": 200,
             "mode": voice_mode,
@@ -418,10 +520,17 @@ def synthesize(
             "voice_id": normalized_voice_id or "",
             "audio_path": str(audio_path),
             "sample_rate": model.sampling_rate,
-            "message": "语音合成成功",
+            "message": message,
+            "auto_prosody": auto_prosody,
+            "auto_prosody_used": auto_prosody_used,
+            "auto_prosody_reason": auto_prosody_reason,
         }
-    except Exception as e:
-        logging.error("Synthesis failed: %s", str(e))
+        if auto_prosody_debug and auto_prosody_plan is not None:
+            response["auto_prosody_plan"] = auto_prosody_plan.to_dict()
+
+        return response
+    except Exception as exc:
+        logging.error("Synthesis failed: %s", str(exc))
         return {
             "success": False,
             "status_code": 500,
@@ -429,66 +538,45 @@ def synthesize(
             "voice_id": normalized_voice_id or "",
             "audio_path": "",
             "sample_rate": 0,
-            "message": f"语音合成失败: {str(e)}",
+            "message": f"语音合成失败: {str(exc)}",
         }
 
 
 def list_voices() -> list:
-    """
-    列出所有可用的音色
-
-    Returns:
-        [
-            {
-                "voice_id": str,
-                "voice_name": str,
-                "pt_path": str,
-                "created_time": str
-            }
-        ]
-    """
     voices = []
     for pt_file in VOICES_DIR.glob("*.pt"):
-        voice_id = pt_file.stem
         stat = pt_file.stat()
-        voices.append({
-            "voice_id": voice_id,
-            "voice_name": voice_id,
-            "pt_path": str(pt_file),
-            "created_time": datetime.fromtimestamp(stat.st_ctime).strftime("%Y-%m-%d %H:%M:%S"),
-            "sort_key": stat.st_ctime,
-        })
+        voices.append(
+            {
+                "voice_id": pt_file.stem,
+                "voice_name": pt_file.stem,
+                "pt_path": str(pt_file),
+                "created_time": datetime.fromtimestamp(stat.st_ctime).strftime("%Y-%m-%d %H:%M:%S"),
+                "sort_key": stat.st_ctime,
+            }
+        )
+
     return [
-        {k: v for k, v in voice.items() if k != "sort_key"}
+        {key: value for key, value in voice.items() if key != "sort_key"}
         for voice in sorted(voices, key=lambda item: item["sort_key"], reverse=True)
     ]
 
 
 def list_outputs() -> list:
-    """
-    列出所有合成的音频文件
-
-    Returns:
-        [
-            {
-                "filename": str,
-                "file_path": str,
-                "size": int,
-                "created_time": str
-            }
-        ]
-    """
     outputs = []
     for wav_file in OUTPUT_DIR.glob("*.wav"):
         stat = wav_file.stat()
-        outputs.append({
-            "filename": wav_file.name,
-            "file_path": str(wav_file),
-            "size": stat.st_size,
-            "created_time": datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
-            "sort_key": stat.st_mtime,
-        })
+        outputs.append(
+            {
+                "filename": wav_file.name,
+                "file_path": str(wav_file),
+                "size": stat.st_size,
+                "created_time": datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+                "sort_key": stat.st_mtime,
+            }
+        )
+
     return [
-        {k: v for k, v in output.items() if k != "sort_key"}
+        {key: value for key, value in output.items() if key != "sort_key"}
         for output in sorted(outputs, key=lambda item: item["sort_key"], reverse=True)
     ]
